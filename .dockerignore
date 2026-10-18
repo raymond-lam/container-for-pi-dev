@@ -1,0 +1,8 @@
+.git
+.env
+.env.*
+*.swp
+*~
+.DS_Store
+.vscode/
+.idea/

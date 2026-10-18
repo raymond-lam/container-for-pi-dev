@@ -1,0 +1,151 @@
+#!/bin/bash
+# Copyright 2026 Raymond Lam
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Pi Coding Agent — Docker Wrapper
+#
+# This script builds (if necessary) and runs the pi coding agent inside a
+# Docker container. It forwards just enough host state into the container to
+# make the experience seamless without over-sharing credentials:
+#
+#   • The current working directory → /workspace (read/write)
+#   • Pi's agent state directory   → /root/.pi/agent (read/write)
+#   • Your OpenRouter API key       → injected as an environment variable
+#   • Git identity & SSH signing    → rewritten for Linux paths inside the container
+#   • GitHub CLI (gh) auth          → read-only mount of ~/.config/gh
+#
+# Requirements
+#   • Docker
+#   • macOS Keychain with an item for openrouter.ai (used for the API key)
+#   • git (optional — if missing, git identity and signing mounts are skipped)
+#
+# Usage
+#   ./pi [any pi subcommands or flags]
+#
+set -euo pipefail
+
+SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+IMAGE=localhost/pi-sandbox
+
+# ------------------------------------------------------------------------
+# 1. Build the image
+# ------------------------------------------------------------------------
+# A fresh build is triggered every invocation. Docker's layer cache makes
+# this essentially free when nothing has changed.
+docker build -f Containerfile -t "$IMAGE" "$SCRIPT_DIR"
+
+# ------------------------------------------------------------------------
+# 2. API key from macOS Keychain
+# ------------------------------------------------------------------------
+# The pi agent needs an OpenRouter API key. On macOS we fetch it securely
+# from the login keychain. If you are on Linux, replace the line below with
+# something like: export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+# ------------------------------------------------------------------------
+mkdir -p "${HOME}/.pi/agent"
+OPENROUTER_API_KEY="$(security find-generic-password -s openrouter.ai -a api-key -w)"
+export OPENROUTER_API_KEY
+
+DOCKER_ARGS=(
+  run --rm
+  -e OPENROUTER_API_KEY
+  -v "$PWD:/workspace"
+  -v "${HOME}/.pi/agent:/root/.pi/agent"
+)
+
+# ------------------------------------------------------------------------
+# 3. Git configuration
+# ------------------------------------------------------------------------
+# We do NOT mount ~/.gitconfig directly because it often contains
+# platform-specific absolute paths (e.g. /Users/<you>/... on macOS).
+# Instead we read the values we need from the host, rewrite the paths for
+# the container's filesystem, and generate a brand-new config file.
+# ------------------------------------------------------------------------
+GIT_CONFIG_DIR=$(mktemp -d)
+trap 'rm -rf "$GIT_CONFIG_DIR"' EXIT
+
+if command -v git >/dev/null 2>&1; then
+  GIT_USER_NAME=$(git config --global user.name 2>/dev/null || true)
+  GIT_USER_EMAIL=$(git config --global user.email 2>/dev/null || true)
+  GIT_SIGNING_KEY_PATH=$(git config --global user.signingkey 2>/dev/null || true)
+  GIT_ALLOWED_SIGNERS_PATH=$(git config --global gpg.ssh.allowedSignersFile 2>/dev/null || true)
+
+  # Build a container-native gitconfig.
+  cat > "$GIT_CONFIG_DIR/gitconfig" <<EOF
+[user]
+$( [[ -n "$GIT_USER_NAME" ]] && echo "  name = $GIT_USER_NAME" )
+$( [[ -n "$GIT_USER_EMAIL" ]] && echo "  email = $GIT_USER_EMAIL" )
+  signingkey = /root/.ssh/git-signing.pub
+[gpg]
+  format = ssh
+[commit]
+  gpgsign = true
+[tag]
+  gpgsign = true
+[gpg "ssh"]
+  allowedSignersFile = /root/.config/git/allowed_signers
+EOF
+
+  DOCKER_ARGS+=(-v "$GIT_CONFIG_DIR/gitconfig:/root/.gitconfig:ro")
+
+  # Mount the SSH signing public key. Only the specific file is shared;
+  # the entire ~/.ssh directory is never exposed to the container.
+  if [[ -n "$GIT_SIGNING_KEY_PATH" && -f "$GIT_SIGNING_KEY_PATH" ]]; then
+    DOCKER_ARGS+=(-v "$GIT_SIGNING_KEY_PATH:/root/.ssh/git-signing.pub:ro")
+  fi
+
+  # Mount the allowed signers file so Git can verify SSH signatures.
+  if [[ -n "$GIT_ALLOWED_SIGNERS_PATH" && -f "$GIT_ALLOWED_SIGNERS_PATH" ]]; then
+    DOCKER_ARGS+=(-v "$GIT_ALLOWED_SIGNERS_PATH:/root/.config/git/allowed_signers:ro")
+  fi
+fi
+
+# ------------------------------------------------------------------------
+# 4. GitHub CLI authentication
+# ------------------------------------------------------------------------
+# We mount ~/.config/gh for settings, but on macOS the actual OAuth token
+# is stored in the login keychain — invisible to the container. To make
+# `gh` commands work seamlessly, we also try to read the active token from
+# the host via `gh auth token` and inject it as GH_TOKEN. Inside the
+# container `gh` prefers GH_TOKEN over the keychain.
+# ------------------------------------------------------------------------
+if [[ -d "$HOME/.config/gh" ]]; then
+  DOCKER_ARGS+=(-v "$HOME/.config/gh:/root/.config/gh:ro")
+fi
+
+if command -v gh >/dev/null 2>&1; then
+  GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+  if [[ -n "$GH_TOKEN" ]]; then
+    export GH_TOKEN
+    DOCKER_ARGS+=(-e GH_TOKEN)
+  fi
+fi
+
+# ------------------------------------------------------------------------
+# 5. TTY / interactive detection
+# ------------------------------------------------------------------------
+# Attach stdin when it looks like a real stream so pi can read prompts.
+if [[ -t 0 || -p /dev/stdin || -f /dev/stdin ]]; then
+  DOCKER_ARGS+=(-i)
+fi
+
+# Allocate a pseudo-TTY only when both stdout and stderr are terminals.
+# This keeps colours, progress bars, and line editing working correctly.
+if [[ -t 1 && -t 2 ]]; then
+  DOCKER_ARGS+=(-t)
+fi
+
+# ------------------------------------------------------------------------
+# 6. Launch
+# ------------------------------------------------------------------------
+exec docker "${DOCKER_ARGS[@]}" "$IMAGE" "$@"
