@@ -75,10 +75,10 @@ GIT_CONFIG_DIR=$(mktemp -d)
 trap 'rm -rf "$GIT_CONFIG_DIR"' EXIT
 
 if command -v git >/dev/null 2>&1; then
-  GIT_USER_NAME=$(git config --global user.name 2>/dev/null || true)
-  GIT_USER_EMAIL=$(git config --global user.email 2>/dev/null || true)
-  GIT_SIGNING_KEY_PATH=$(git config --global user.signingkey 2>/dev/null || true)
-  GIT_ALLOWED_SIGNERS_PATH=$(git config --global gpg.ssh.allowedSignersFile 2>/dev/null || true)
+  GIT_USER_NAME=$(git config --global user.name)
+  GIT_USER_EMAIL=$(git config --global user.email)
+  GIT_SIGNING_KEY_PATH=$(git config --global user.signingkey)
+  GIT_ALLOWED_SIGNERS_PATH=$(git config --global gpg.ssh.allowedSignersFile)
 
   # Build a container-native gitconfig.
   cat > "$GIT_CONFIG_DIR/gitconfig" <<EOF
@@ -124,7 +124,7 @@ if [[ -d "$HOME/.config/gh" ]]; then
 fi
 
 if command -v gh >/dev/null 2>&1; then
-  GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+  GH_TOKEN="$(gh auth token)"
   if [[ -n "$GH_TOKEN" ]]; then
     export GH_TOKEN
     DOCKER_ARGS+=(-e GH_TOKEN)
