@@ -63,12 +63,37 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # the package does not require any post-install lifecycle scripts.
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
 
+# Run as an unprivileged user whose UID/GID can be aligned with the host
+# (the wrapper passes the invoking user's IDs as build args). Matching the
+# host IDs keeps bind-mounted project and agent state files writable on
+# native Linux, where ownership is enforced.
+ARG APP_UID=1000
+ARG APP_GID=1000
+
+# The base image ships a `node` user at UID/GID 1000. Remove it so the pi
+# user can take those IDs without ambiguity, then create pi. -o allows a
+# non-unique GID, since host GIDs (e.g. staff=20 on macOS) can collide with
+# Debian's system groups.
+RUN userdel -r node 2>/dev/null || true \
+  && groupdel node 2>/dev/null || true \
+  && groupadd -o --gid "${APP_GID}" pi \
+  && useradd -o --uid "${APP_UID}" --gid "${APP_GID}" \
+       --create-home --shell /bin/bash pi \
+  && mkdir -p /home/pi/.config/git /home/pi/.ssh /run/pi \
+  && chown -R "${APP_UID}:${APP_GID}" /home/pi /run/pi \
+  && chmod 700 /home/pi/.ssh
+
 # The entrypoint optionally starts a socat bridge so the host SSH agent
 # proxy is available to ssh-keygen at a normal Unix socket path. It then execs
 # tini so background processes are reaped and signals are forwarded.
 COPY entrypoint /usr/local/bin/entrypoint
 RUN chmod +x /usr/local/bin/entrypoint
 
-WORKDIR /workspace
+# Run unprivileged from here on. HOME is set explicitly so tools that do not
+# consult the passwd database still resolve the right config locations.
+ENV HOME=/home/pi
+USER pi
+
+WORKDIR /home/pi
 ENTRYPOINT ["/usr/local/bin/entrypoint"]
 CMD ["pi"]

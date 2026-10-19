@@ -2,7 +2,7 @@
 
 A thin Docker wrapper for the [Pi Coding Agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) that keeps your host machine clean while preserving a seamless development experience.
 
-The companion `pi` script builds the image, injects your API key, and forwards just enough host state (workspace, Git identity, GitHub CLI auth) so that the agent behaves as if it were running natively — without requiring Node.js, npm, or Pi itself on your host.
+The companion `pi` script builds the image, injects your API key, and forwards just enough host state (project files, Git identity, GitHub CLI auth) so that the agent behaves as if it were running natively — without requiring Node.js, npm, or Pi itself on your host.
 
 The same wrapper is bridge-aware and can also be used with the [Pi Coding Agent VS Code extension](https://marketplace.visualstudio.com/items?itemName=pi0.pi-vscode) (`pi0.pi-vscode`).
 
@@ -47,12 +47,12 @@ The first invocation builds the image; subsequent runs are instant thanks to Doc
 | Current working directory | Same as host | Read/write — your project files |
 | `~/.pi/agent` | Same as host | Persistent agent state across runs |
 | OpenRouter API key | `OPENROUTER_API_KEY` env var | From the environment, or fetched from macOS Keychain |
-| Git `user.name` / `user.email` | `/root/.gitconfig` | Rewritten with container-native paths |
-| Git SSH signing public key | `/root/.ssh/git-signing.pub` | Only the specific public key file is shared; a private key path is rejected |
+| Git `user.name` / `user.email` | `/home/pi/.gitconfig` | Rewritten with container-native paths |
+| Git SSH signing public key | `/home/pi/.ssh/git-signing.pub` | Only the specific public key file is shared; a private key path is rejected |
 | Host SSH agent | `SSH_AUTH_SOCK` env var | Forwarded via a short-lived `socat` TCP proxy so `ssh-keygen` can sign; private keys are never mounted |
-| Git `allowed_signers` | `/root/.config/git/allowed_signers` | For SSH signature verification |
-| `gh` config (`~/.config/gh`) | `/root/.config/gh` | Read-only settings, aliases, etc. |
-| `gh` OAuth token | `GH_TOKEN` env var | Retrieved from host keychain via `gh auth token` and injected so `gh` works without a container login |
+| Git `allowed_signers` | `/home/pi/.config/git/allowed_signers` | For SSH signature verification |
+| `gh` config (`~/.config/gh`) | `/home/pi/.config/gh` | Read-only settings, aliases, etc. |
+| `gh` OAuth token | `GH_TOKEN` env var | Retrieved from host keychain via `gh auth token` and injected so `gh` works without a container login; git uses it for GitHub HTTPS auth via the `gh` credential helper |
 
 The wrapper intentionally **does not** mount your entire `~/.ssh` or `~/.gitconfig` verbatim, avoiding host-specific absolute paths and unnecessary credential exposure.
 
@@ -91,7 +91,7 @@ The `pi` wrapper works with the [Pi Coding Agent VS Code extension](https://mark
 
 When launched by the extension, the wrapper additionally handles the bridge and its path assumptions:
 
-- **Same-path workspace** — the project is mounted at its host absolute path (instead of `/workspace`), so file paths returned by the VS Code bridge resolve inside the container.
+- **Same-path project mount** — the project is mounted at its host absolute path, so file paths returned by the VS Code bridge resolve inside the container.
 - **Extension mount** — the installed `pi0.pi-vscode` extension directory is discovered under the common VS Code extension roots and mounted read-only at the same host path.
 - **Bridge URL rewrite** — `PI_VSCODE_BRIDGE_URL` is rewritten to the wrapper's shared host alias so the container can reach the extension's localhost bridge. The bridge token and terminal ID are forwarded too.
 - **Session continuity** — `~/.pi/agent` is mounted at its host path and advertised via `PI_CODING_AGENT_DIR`, so the extension can track and restore terminal sessions across window reloads.
@@ -101,7 +101,7 @@ When launched by the extension, the wrapper additionally handles the bridge and 
 >
 > - The VS Code extension host must run on the same machine (and network namespace) as Docker. Remote SSH / Dev Container setups only work if the extension and Docker both run on that remote host and the bridge is reachable.
 > - The wrapper uses one host address for both the bridge and SSH agent: `host.docker.internal` on Docker Desktop/Podman, and `127.0.0.1` with `--network=host` on native Linux.
-> - Extension bridge tools see the same file paths as the host, which is why the workspace is mounted at its host path rather than `/workspace`.
+> - Extension bridge tools see the same file paths as the host, which is why the project is mounted at its host path.
 > - The extension's **Upgrade Pi and Packages** command upgrades the host Pi, not the Pi installed in the container image. Bump the version in `Containerfile` and rebuild instead.
 
 ---
@@ -129,7 +129,7 @@ export OPENROUTER_API_KEY=...
 
 ## Security notes
 
-- The container runs as `root`. This is acceptable for a local sandbox, but do not use this image in production or multi-tenant environments as-is.
+- The container runs as an unprivileged user (`pi`). The wrapper passes your host UID/GID as build args so bind-mounted files keep their ownership and stay writable on native Linux. This is still a local sandbox, not a hardened multi-tenant runtime.
 - The host SSH agent socket is forwarded so `ssh-keygen` can produce signatures without mounting private keys. Unix sockets cannot cross the Docker Desktop/Podman VM boundary, so the wrapper uses a short-lived `socat` TCP proxy and recreates the socket inside the container. On native Linux the proxy binds to loopback under host networking; on VM-based runtimes it binds all interfaces for the duration of the run. The wrapper refuses to mount a private key even if `user.signingkey` points at one. The agent can sign with any key it holds, so only keep the keys you intend to use loaded. On macOS, make sure the signing key is available via `ssh-add --apple-use-keychain <key>`.
 - The `.dockerignore` ensures that `.env` files and your local `.git` directory never enter the Docker build context.
 
