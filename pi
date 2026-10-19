@@ -49,7 +49,12 @@ PLATFORM="$(uname -s)"
 # A fresh build is triggered every invocation. Docker's layer cache makes
 # this essentially free when nothing has changed.
 # Build output goes to stderr so `pi --mode rpc` stdout stays parseable.
-docker build -f Containerfile -t "$IMAGE" "$SCRIPT_DIR" >&2
+# The container user is built with the invoking user's UID/GID so bind-mounted
+# files keep their ownership and remain writable on native Linux.
+docker build \
+  --build-arg "APP_UID=$(id -u)" \
+  --build-arg "APP_GID=$(id -g)" \
+  -f Containerfile -t "$IMAGE" "$SCRIPT_DIR" >&2
 
 # ------------------------------------------------------------------------
 # API key
@@ -155,7 +160,7 @@ if command -v git >/dev/null 2>&1; then
       DOCKER_ARGS+=(
         -e "PI_SSH_AGENT_HOST=$HOST_ALIAS"
         -e "PI_SSH_AGENT_PORT=$SSH_AGENT_PORT"
-        -v "$GIT_SIGNING_KEY_PATH:/root/.ssh/git-signing.pub:ro"
+        -v "$GIT_SIGNING_KEY_PATH:/home/pi/.ssh/git-signing.pub:ro"
       )
     else
       echo "Warning: socat/SSH agent unavailable; SSH commit signing is disabled." >&2
@@ -170,7 +175,7 @@ if command -v git >/dev/null 2>&1; then
 EOF
   if [[ -n "$GIT_SIGNING_KEY_PATH" ]]; then
     cat >> "$GIT_CONFIG_DIR/gitconfig" <<EOF
-  signingkey = /root/.ssh/git-signing.pub
+  signingkey = /home/pi/.ssh/git-signing.pub
 [gpg]
   format = ssh
 [commit]
@@ -178,10 +183,10 @@ EOF
 [tag]
   gpgsign = true
 [gpg "ssh"]
-  allowedSignersFile = /root/.config/git/allowed_signers
+  allowedSignersFile = /home/pi/.config/git/allowed_signers
 EOF
     if [[ -n "$GIT_ALLOWED_SIGNERS_PATH" && -f "$GIT_ALLOWED_SIGNERS_PATH" ]]; then
-      DOCKER_ARGS+=(-v "$GIT_ALLOWED_SIGNERS_PATH:/root/.config/git/allowed_signers:ro")
+      DOCKER_ARGS+=(-v "$GIT_ALLOWED_SIGNERS_PATH:/home/pi/.config/git/allowed_signers:ro")
     fi
   else
     cat >> "$GIT_CONFIG_DIR/gitconfig" <<EOF
@@ -192,7 +197,10 @@ EOF
 EOF
   fi
 
-  DOCKER_ARGS+=(-v "$GIT_CONFIG_DIR/gitconfig:/root/.gitconfig:ro")
+  # The generated config lives in a temporary directory and is deleted on
+  # exit, so mounting it writable is safe. It lets tools such as
+  # `gh auth setup-git` update the in-container config without failing.
+  DOCKER_ARGS+=(-v "$GIT_CONFIG_DIR/gitconfig:/home/pi/.gitconfig")
 fi
 
 # ------------------------------------------------------------------------
@@ -205,7 +213,7 @@ fi
 # container `gh` prefers GH_TOKEN over the keychain.
 # ------------------------------------------------------------------------
 if [[ -d "$HOME/.config/gh" ]]; then
-  DOCKER_ARGS+=(-v "$HOME/.config/gh:/root/.config/gh:ro")
+  DOCKER_ARGS+=(-v "$HOME/.config/gh:/home/pi/.config/gh:ro")
 fi
 
 if command -v gh >/dev/null 2>&1; then
@@ -213,6 +221,18 @@ if command -v gh >/dev/null 2>&1; then
   if [[ -n "$GH_TOKEN" ]]; then
     export GH_TOKEN
     DOCKER_ARGS+=(-e GH_TOKEN)
+
+    # Teach git to authenticate HTTPS GitHub operations with GH_TOKEN via the
+    # gh credential helper. This makes `git push`/`fetch` work out of the box
+    # and avoids requiring `gh auth setup-git` inside the container. The empty
+    # helper line resets any inherited helpers before adding gh's.
+    if [[ -f "$GIT_CONFIG_DIR/gitconfig" ]]; then
+      cat >> "$GIT_CONFIG_DIR/gitconfig" <<'EOF'
+[credential "https://github.com"]
+  helper =
+  helper = !gh auth git-credential
+EOF
+    fi
   fi
 fi
 

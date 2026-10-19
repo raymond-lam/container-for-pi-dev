@@ -4,7 +4,7 @@
 
 This repository is a **Docker sandbox wrapper** for the [Pi Coding Agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent). It provides a clean, isolated runtime environment that keeps Node.js, npm, and Pi itself off the host machine.
 
-The wrapper (`pi`) builds a container image, injects sensitive credentials (API keys, GitHub tokens) securely from the host, and forwards just enough host state (workspace, Git identity, `gh` config) so the agent behaves natively.
+The wrapper (`pi`) builds a container image, injects sensitive credentials (API keys, GitHub tokens) securely from the host, and forwards just enough host state (project files, Git identity, `gh` config) so the agent behaves natively.
 
 ## Architecture
 
@@ -87,7 +87,7 @@ shellcheck pi       # if available — strongly recommended
 
 ## Things to Be Careful About
 
-- **Do not** change `WORKDIR /workspace`, `ENTRYPOINT ["/usr/local/bin/entrypoint"]`, or `CMD ["pi"]` in `Containerfile` without updating the wrapper script assumptions.
+- **Do not** change `WORKDIR /home/pi`, `ENTRYPOINT ["/usr/local/bin/entrypoint"]`, or `CMD ["pi"]` in `Containerfile` without updating the wrapper script assumptions. The wrapper always overrides the working directory with `-w "$PWD"`.
 - **Do not** bake secrets into the image. The `Containerfile` must remain secret-free.
 - The `trap 'rm -rf "$GIT_CONFIG_DIR"' EXIT` line is critical — it cleans up the temporary Git config. Don't remove it.
 - The script uses `set -euo pipefail`. Any new command pipelines must handle undefined variables and exit codes explicitly.
