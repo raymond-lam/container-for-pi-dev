@@ -22,7 +22,7 @@ The wrapper (`pi`) builds a container image, injects sensitive credentials (API 
 
 | File | Language | Purpose |
 |------|----------|---------|
-| `pi` | Bash | The wrapper script — builds image, sets up mounts/env, launches container. This is the primary user-facing interface. |
+| `pi` | Bash | The wrapper script — builds image, sets up mounts/env, launches container. This is the primary user-facing interface. It is also bridge-aware for the `pi0.pi-vscode` extension (same-path mounts, bridge URL + token forwarding, clean stdout for RPC mode). |
 | `Containerfile` | Dockerfile | OCI image definition. Installs node:24, git, ripgrep, gh CLI, and Pi agent globally. |
 | `.dockerignore` | — | Excludes `.git`, env files, and editor debris from build context. |
 | `README.md` | Markdown | User-facing documentation. Keep in sync with script behaviour. |

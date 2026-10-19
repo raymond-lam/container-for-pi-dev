@@ -19,11 +19,15 @@
 # Docker container. It forwards just enough host state into the container to
 # make the experience seamless without over-sharing credentials:
 #
-#   • The current working directory → /workspace (read/write)
-#   • Pi's agent state directory   → /root/.pi/agent (read/write)
+#   • The current working directory → same absolute path (read/write)
+#   • Pi's agent state directory   → same absolute path (read/write)
 #   • Your OpenRouter API key       → injected as an environment variable
 #   • Git identity & SSH signing    → rewritten for Linux paths inside the container
 #   • GitHub CLI (gh) auth          → read-only mount of ~/.config/gh
+#   • VS Code bridge                → host.docker.internal + extension mount
+#
+# The script also supports the pi0.pi-vscode extension. Set the VS Code
+# setting `pi-vscode.path` to this script's absolute path.
 #
 # Requirements
 #   • Docker
@@ -39,14 +43,15 @@ SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 IMAGE=localhost/pi-sandbox
 
 # ------------------------------------------------------------------------
-# 1. Build the image
+# Build the image
 # ------------------------------------------------------------------------
 # A fresh build is triggered every invocation. Docker's layer cache makes
 # this essentially free when nothing has changed.
-docker build -f Containerfile -t "$IMAGE" "$SCRIPT_DIR"
+# Build output goes to stderr so `pi --mode rpc` stdout stays parseable.
+docker build -f Containerfile -t "$IMAGE" "$SCRIPT_DIR" >&2
 
 # ------------------------------------------------------------------------
-# 2. API key from macOS Keychain
+# API key from macOS Keychain
 # ------------------------------------------------------------------------
 # The pi agent needs an OpenRouter API key. On macOS we fetch it securely
 # from the login keychain. If you are on Linux, replace the line below with
@@ -59,12 +64,48 @@ export OPENROUTER_API_KEY
 DOCKER_ARGS=(
   run --rm
   -e OPENROUTER_API_KEY
-  -v "$PWD:/workspace"
-  -v "${HOME}/.pi/agent:/root/.pi/agent"
+  -v "$PWD:$PWD"
+  -w "$PWD"
+  -v "${HOME}/.pi/agent:${HOME}/.pi/agent"
+  -e "PI_CODING_AGENT_DIR=${HOME}/.pi/agent"
 )
 
 # ------------------------------------------------------------------------
-# 3. Git configuration
+# VS Code bridge
+# ------------------------------------------------------------------------
+# The pi0.pi-vscode extension exposes a localhost HTTP bridge and passes its
+# URL, token, and terminal ID to pi. Rewrite loopback so the container can
+# reach it, and mount the installed extension at its host path so pi can load
+# the bridge. Native Linux uses host networking because the bridge only binds
+# 127.0.0.1.
+# ------------------------------------------------------------------------
+if [[ -n "${PI_VSCODE_BRIDGE_URL:-}" ]]; then
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    DOCKER_ARGS+=(--network=host)
+  else
+    PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/127.0.0.1/host.docker.internal}"
+    PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/localhost/host.docker.internal}"
+  fi
+  DOCKER_ARGS+=(-e "PI_VSCODE_BRIDGE_URL=$PI_VSCODE_BRIDGE_URL")
+  DOCKER_ARGS+=(-e PI_VSCODE_BRIDGE_TOKEN -e PI_VSCODE_TERMINAL_ID)
+
+  # Mount installed pi0.pi-vscode extension directories at their host paths
+  # so the extension's --extension path resolves inside the container.
+  for EXT_ROOT in \
+    "$HOME/.vscode/extensions" \
+    "$HOME/.vscode-server/extensions" \
+    "$HOME/.vscode-insiders/extensions" \
+    "$HOME/.cursor/extensions" \
+    "$HOME/.windsurf/extensions" \
+    "$HOME/.positron/extensions"; do
+    for EXT_DIR in "$EXT_ROOT"/pi0.pi-vscode-*; do
+      [[ -d "$EXT_DIR" ]] && DOCKER_ARGS+=(-v "$EXT_DIR:$EXT_DIR:ro")
+    done
+  done
+fi
+
+# ------------------------------------------------------------------------
+# Git configuration
 # ------------------------------------------------------------------------
 # We do NOT mount ~/.gitconfig directly because it often contains
 # platform-specific absolute paths (e.g. /Users/<you>/... on macOS).
@@ -111,7 +152,7 @@ EOF
 fi
 
 # ------------------------------------------------------------------------
-# 4. GitHub CLI authentication
+# GitHub CLI authentication
 # ------------------------------------------------------------------------
 # We mount ~/.config/gh for settings, but on macOS the actual OAuth token
 # is stored in the login keychain — invisible to the container. To make
@@ -132,7 +173,7 @@ if command -v gh >/dev/null 2>&1; then
 fi
 
 # ------------------------------------------------------------------------
-# 5. TTY / interactive detection
+# TTY / interactive detection
 # ------------------------------------------------------------------------
 # Attach stdin when it looks like a real stream so pi can read prompts.
 if [[ -t 0 || -p /dev/stdin || -f /dev/stdin ]]; then
@@ -146,6 +187,6 @@ if [[ -t 1 && -t 2 ]]; then
 fi
 
 # ------------------------------------------------------------------------
-# 6. Launch
+# Launch
 # ------------------------------------------------------------------------
 exec docker "${DOCKER_ARGS[@]}" "$IMAGE" "$@"
