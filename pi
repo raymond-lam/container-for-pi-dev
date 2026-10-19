@@ -20,9 +20,9 @@
 # make the experience seamless without over-sharing credentials:
 #
 #   • The current working directory → same absolute path (read/write)
-#   • Pi's agent state directory   → same absolute path (read/write)
+#   • Pi's agent state directory    → same absolute path (read/write)
 #   • Your OpenRouter API key       → injected as an environment variable
-#   • Git identity & SSH signing    → rewritten for Linux paths inside the container
+#   • Git identity & SSH signing    → rewritten paths + forwarded SSH agent
 #   • GitHub CLI (gh) auth          → read-only mount of ~/.config/gh
 #   • VS Code bridge                → host.docker.internal + extension mount
 #
@@ -41,6 +41,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 IMAGE=localhost/pi-sandbox
+PLATFORM="$(uname -s)"
 
 # ------------------------------------------------------------------------
 # Build the image
@@ -51,14 +52,19 @@ IMAGE=localhost/pi-sandbox
 docker build -f Containerfile -t "$IMAGE" "$SCRIPT_DIR" >&2
 
 # ------------------------------------------------------------------------
-# API key from macOS Keychain
+# API key
 # ------------------------------------------------------------------------
-# The pi agent needs an OpenRouter API key. On macOS we fetch it securely
-# from the login keychain. If you are on Linux, replace the line below with
-# something like: export OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-}"
+# Prefer OPENROUTER_API_KEY from the environment (Linux/Podman/CI). Otherwise
+# fall back to the macOS Keychain.
 # ------------------------------------------------------------------------
 mkdir -p "${HOME}/.pi/agent"
-OPENROUTER_API_KEY="$(security find-generic-password -s openrouter.ai -a api-key -w)"
+if [[ -z "${OPENROUTER_API_KEY:-}" ]] && command -v security >/dev/null 2>&1; then
+  OPENROUTER_API_KEY="$(security find-generic-password -s openrouter.ai -a api-key -w 2>/dev/null || true)"
+fi
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+  echo "Error: set OPENROUTER_API_KEY, or store it in macOS Keychain (service openrouter.ai, account api-key)." >&2
+  exit 1
+fi
 export OPENROUTER_API_KEY
 
 DOCKER_ARGS=(
@@ -70,22 +76,29 @@ DOCKER_ARGS=(
   -e "PI_CODING_AGENT_DIR=${HOME}/.pi/agent"
 )
 
+# Use one address for host services everywhere. Native Linux uses host
+# networking so 127.0.0.1 reaches the host; VM-based runtimes use the
+# host.docker.internal alias.
+if [[ "$PLATFORM" == "Linux" ]]; then
+  HOST_ALIAS=127.0.0.1
+  SOCAT_BIND=127.0.0.1
+  DOCKER_ARGS+=(--network=host)
+else
+  HOST_ALIAS=host.docker.internal
+  SOCAT_BIND=0.0.0.0
+fi
+
 # ------------------------------------------------------------------------
 # VS Code bridge
 # ------------------------------------------------------------------------
 # The pi0.pi-vscode extension exposes a localhost HTTP bridge and passes its
-# URL, token, and terminal ID to pi. Rewrite loopback so the container can
-# reach it, and mount the installed extension at its host path so pi can load
-# the bridge. Native Linux uses host networking because the bridge only binds
-# 127.0.0.1.
+# URL, token, and terminal ID to pi. Rewrite loopback to the shared host
+# alias, and mount the installed extension at its host path so pi can load
+# the bridge.
 # ------------------------------------------------------------------------
 if [[ -n "${PI_VSCODE_BRIDGE_URL:-}" ]]; then
-  if [[ "$(uname -s)" == "Linux" ]]; then
-    DOCKER_ARGS+=(--network=host)
-  else
-    PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/127.0.0.1/host.docker.internal}"
-    PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/localhost/host.docker.internal}"
-  fi
+  PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/127.0.0.1/$HOST_ALIAS}"
+  PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/localhost/$HOST_ALIAS}"
   DOCKER_ARGS+=(-e "PI_VSCODE_BRIDGE_URL=$PI_VSCODE_BRIDGE_URL")
   DOCKER_ARGS+=(-e PI_VSCODE_BRIDGE_TOKEN -e PI_VSCODE_TERMINAL_ID)
 
@@ -113,7 +126,15 @@ fi
 # the container's filesystem, and generate a brand-new config file.
 # ------------------------------------------------------------------------
 GIT_CONFIG_DIR=$(mktemp -d)
-trap 'rm -rf "$GIT_CONFIG_DIR"' EXIT
+SSH_AGENT_PROXY_PID=""
+cleanup() {
+  rm -rf "$GIT_CONFIG_DIR"
+  if [[ -n "$SSH_AGENT_PROXY_PID" ]]; then
+    kill "$SSH_AGENT_PROXY_PID" 2>/dev/null || true
+    wait "$SSH_AGENT_PROXY_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 if command -v git >/dev/null 2>&1; then
   GIT_USER_NAME=$(git config --global user.name)
@@ -121,11 +142,34 @@ if command -v git >/dev/null 2>&1; then
   GIT_SIGNING_KEY_PATH=$(git config --global user.signingkey)
   GIT_ALLOWED_SIGNERS_PATH=$(git config --global gpg.ssh.allowedSignersFile)
 
-  # Build a container-native gitconfig.
+  # Check signing prerequisites up front. An empty GIT_SIGNING_KEY_PATH means
+  # signing is unavailable and must stay disabled in the generated config.
+  if [[ -n "$GIT_SIGNING_KEY_PATH" && -f "$GIT_SIGNING_KEY_PATH" ]]; then
+    if grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$GIT_SIGNING_KEY_PATH"; then
+      echo "Warning: user.signingkey points to a private key; not mounting it or signing commits." >&2
+      GIT_SIGNING_KEY_PATH=""
+    elif [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]] && command -v socat >/dev/null 2>&1; then
+      SSH_AGENT_PORT="${PI_SSH_AGENT_PORT:-$((RANDOM % 16384 + 49152))}"
+      socat "TCP-LISTEN:$SSH_AGENT_PORT,bind=$SOCAT_BIND,reuseaddr,fork" "UNIX-CONNECT:$SSH_AUTH_SOCK" </dev/null >/dev/null 2>&1 &
+      SSH_AGENT_PROXY_PID=$!
+      DOCKER_ARGS+=(
+        -e "PI_SSH_AGENT_HOST=$HOST_ALIAS"
+        -e "PI_SSH_AGENT_PORT=$SSH_AGENT_PORT"
+        -v "$GIT_SIGNING_KEY_PATH:/root/.ssh/git-signing.pub:ro"
+      )
+    else
+      echo "Warning: socat/SSH agent unavailable; SSH commit signing is disabled." >&2
+      GIT_SIGNING_KEY_PATH=""
+    fi
+  fi
+
   cat > "$GIT_CONFIG_DIR/gitconfig" <<EOF
 [user]
-$( [[ -n "$GIT_USER_NAME" ]] && echo "  name = $GIT_USER_NAME" )
-$( [[ -n "$GIT_USER_EMAIL" ]] && echo "  email = $GIT_USER_EMAIL" )
+  $( [[ -n "$GIT_USER_NAME" ]] && echo "name = $GIT_USER_NAME" )
+  $( [[ -n "$GIT_USER_EMAIL" ]] && echo "email = $GIT_USER_EMAIL" )
+EOF
+  if [[ -n "$GIT_SIGNING_KEY_PATH" ]]; then
+    cat >> "$GIT_CONFIG_DIR/gitconfig" <<EOF
   signingkey = /root/.ssh/git-signing.pub
 [gpg]
   format = ssh
@@ -136,19 +180,19 @@ $( [[ -n "$GIT_USER_EMAIL" ]] && echo "  email = $GIT_USER_EMAIL" )
 [gpg "ssh"]
   allowedSignersFile = /root/.config/git/allowed_signers
 EOF
+    if [[ -n "$GIT_ALLOWED_SIGNERS_PATH" && -f "$GIT_ALLOWED_SIGNERS_PATH" ]]; then
+      DOCKER_ARGS+=(-v "$GIT_ALLOWED_SIGNERS_PATH:/root/.config/git/allowed_signers:ro")
+    fi
+  else
+    cat >> "$GIT_CONFIG_DIR/gitconfig" <<EOF
+[commit]
+  gpgsign = false
+[tag]
+  gpgsign = false
+EOF
+  fi
 
   DOCKER_ARGS+=(-v "$GIT_CONFIG_DIR/gitconfig:/root/.gitconfig:ro")
-
-  # Mount the SSH signing public key. Only the specific file is shared;
-  # the entire ~/.ssh directory is never exposed to the container.
-  if [[ -n "$GIT_SIGNING_KEY_PATH" && -f "$GIT_SIGNING_KEY_PATH" ]]; then
-    DOCKER_ARGS+=(-v "$GIT_SIGNING_KEY_PATH:/root/.ssh/git-signing.pub:ro")
-  fi
-
-  # Mount the allowed signers file so Git can verify SSH signatures.
-  if [[ -n "$GIT_ALLOWED_SIGNERS_PATH" && -f "$GIT_ALLOWED_SIGNERS_PATH" ]]; then
-    DOCKER_ARGS+=(-v "$GIT_ALLOWED_SIGNERS_PATH:/root/.config/git/allowed_signers:ro")
-  fi
 fi
 
 # ------------------------------------------------------------------------
@@ -189,4 +233,6 @@ fi
 # ------------------------------------------------------------------------
 # Launch
 # ------------------------------------------------------------------------
-exec docker "${DOCKER_ARGS[@]}" "$IMAGE" "$@"
+# Run docker as a child rather than exec'ing it so the EXIT trap fires and
+# removes the temporary git config and shuts down the agent proxy.
+docker "${DOCKER_ARGS[@]}" "$IMAGE" pi "$@"

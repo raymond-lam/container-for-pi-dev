@@ -24,6 +24,7 @@ The wrapper (`pi`) builds a container image, injects sensitive credentials (API 
 |------|----------|---------|
 | `pi` | Bash | The wrapper script — builds image, sets up mounts/env, launches container. This is the primary user-facing interface. It is also bridge-aware for the `pi0.pi-vscode` extension (same-path mounts, bridge URL + token forwarding, clean stdout for RPC mode). |
 | `Containerfile` | Dockerfile | OCI image definition. Installs node:24, git, ripgrep, gh CLI, and Pi agent globally. |
+| `entrypoint` | Shell | Container entrypoint; optionally bridges the host SSH agent proxy. |
 | `.dockerignore` | — | Excludes `.git`, env files, and editor debris from build context. |
 | `README.md` | Markdown | User-facing documentation. Keep in sync with script behaviour. |
 | `LICENSE` | — | Apache 2.0 |
@@ -32,6 +33,7 @@ The wrapper (`pi`) builds a container image, injects sensitive credentials (API 
 
 ### Security-first credential handling
 - **Never** mount the entire `~/.ssh` directory into the container.
+- Private SSH keys are never mounted. Git signing uses the forwarded host SSH agent so `ssh-keygen` can sign with the key's private half.
 - **Never** mount `~/.gitconfig` verbatim — it contains host-specific absolute paths.
 - The script reads only the specific values it needs (`user.name`, `user.email`, `user.signingkey`, `gpg.ssh.allowedSignersFile`) and rewrites them with container-native paths.
 - API keys are fetched at runtime and injected as env vars; they are never baked into the image.
@@ -85,7 +87,7 @@ shellcheck pi       # if available — strongly recommended
 
 ## Things to Be Careful About
 
-- **Do not** change `WORKDIR /workspace` or `ENTRYPOINT ["pi"]` in `Containerfile` without updating the wrapper script assumptions.
+- **Do not** change `WORKDIR /workspace`, `ENTRYPOINT ["/usr/local/bin/entrypoint"]`, or `CMD ["pi"]` in `Containerfile` without updating the wrapper script assumptions.
 - **Do not** bake secrets into the image. The `Containerfile` must remain secret-free.
 - The `trap 'rm -rf "$GIT_CONFIG_DIR"' EXIT` line is critical — it cleans up the temporary Git config. Don't remove it.
 - The script uses `set -euo pipefail`. Any new command pipelines must handle undefined variables and exit codes explicitly.

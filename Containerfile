@@ -30,7 +30,10 @@ FROM node:24-bookworm-slim
 #   • curl        – used to fetch the GitHub CLI signing key
 #   • git         – version control
 #   • gnupg       – sometimes required by apt keyring operations
+#   • openssh-client – ssh-keygen for SSH commit signing
 #   • ripgrep     – fast search, used by pi
+#   • socat       – bridges the host SSH agent TCP proxy to a Unix socket
+#   • tini        – minimal init that reaps zombies and forwards signals
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash=5.2.15-2+b13 \
@@ -38,7 +41,10 @@ RUN apt-get update \
     curl=7.88.1-10+deb12u15 \
     git=1:2.39.5-0+deb12u3 \
     gnupg=2.2.40-1.1+deb12u2 \
+    openssh-client=1:9.2p1-2+deb12u10 \
     ripgrep=13.0.0-4+b2 \
+    socat=1.7.4.4-2 \
+    tini=0.19.0-1+b3 \
   && rm -rf /var/lib/apt/lists/*
 
 # Install the GitHub CLI (gh) from the official GitHub APT repository.
@@ -57,5 +63,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # the package does not require any post-install lifecycle scripts.
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
 
+# The entrypoint optionally starts a socat bridge so the host SSH agent
+# proxy is available to ssh-keygen at a normal Unix socket path. It then execs
+# tini so background processes are reaped and signals are forwarded.
+COPY entrypoint /usr/local/bin/entrypoint
+RUN chmod +x /usr/local/bin/entrypoint
+
 WORKDIR /workspace
-ENTRYPOINT ["pi"]
+ENTRYPOINT ["/usr/local/bin/entrypoint"]
+CMD ["pi"]
