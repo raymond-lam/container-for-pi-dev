@@ -19,6 +19,7 @@
 set -eu
 
 if [ -n "${PI_SSH_AGENT_HOST:-}" ] && [ -n "${PI_SSH_AGENT_PORT:-}" ]; then
+  mkdir -p /run/pi
   rm -f /run/pi/ssh-agent.sock
   socat "UNIX-LISTEN:/run/pi/ssh-agent.sock,fork,mode=600" \
     "TCP:${PI_SSH_AGENT_HOST}:${PI_SSH_AGENT_PORT}" &
