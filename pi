@@ -101,13 +101,21 @@ DOCKER_ARGS=(
 # services are still reachable, but the container no longer shares the host
 # network namespace (and therefore cannot reach host loopback-only services).
 HOST_ALIAS=host.docker.internal
-SOCAT_BIND=0.0.0.0
+# Never bind proxies to every interface. Loopback is the safe default for
+# Docker Desktop, whose host.docker.internal forwards to host loopback. On
+# native Linux the container reaches the host through the Docker bridge
+# gateway instead, so use that address when it can be determined. If it
+# cannot, SOCAT_BIND stays empty and callers fail closed.
+SOCAT_BIND=127.0.0.1
 if [[ "$PLATFORM" == "Linux" ]]; then
   DOCKER_ARGS+=(--add-host=host.docker.internal:host-gateway)
-  # Prefer binding proxies to the bridge gateway rather than every interface.
   DOCKER_GATEWAY="$(docker network inspect bridge \
     --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
-  [[ -n "$DOCKER_GATEWAY" ]] && SOCAT_BIND="$DOCKER_GATEWAY"
+  if [[ -n "$DOCKER_GATEWAY" ]]; then
+    SOCAT_BIND="$DOCKER_GATEWAY"
+  else
+    SOCAT_BIND=""
+  fi
 fi
 
 # ------------------------------------------------------------------------
@@ -162,6 +170,10 @@ if [[ -n "${PI_VSCODE_BRIDGE_URL:-}" ]]; then
     BRIDGE_HOST_PORT="${BASH_REMATCH[3]}"
     BRIDGE_REST="${BASH_REMATCH[4]}"
     BRIDGE_RELAY_PORT="$((RANDOM % 16384 + 49152))"
+    if [[ -z "$SOCAT_BIND" ]]; then
+      echo "Error: could not determine a container-reachable bind address for the VS Code bridge relay." >&2
+      exit 1
+    fi
     socat "TCP-LISTEN:$BRIDGE_RELAY_PORT,bind=$SOCAT_BIND,reuseaddr,fork" \
       "TCP:127.0.0.1:$BRIDGE_HOST_PORT" </dev/null >/dev/null 2>&1 &
     BRIDGE_RELAY_PID=$!
@@ -245,13 +257,18 @@ if command -v git >/dev/null 2>&1; then
         if [[ -S "$SIGNING_AGENT_SOCKET" ]] \
            && SSH_AUTH_SOCK="$SIGNING_AGENT_SOCKET" ssh-add "$SIGNING_PRIVATE_KEY_PATH" </dev/null >/dev/null 2>&1; then
           SSH_AGENT_PORT="${PI_SSH_AGENT_PORT:-$((RANDOM % 16384 + 49152))}"
-          socat "TCP-LISTEN:$SSH_AGENT_PORT,bind=$SOCAT_BIND,reuseaddr,fork" "UNIX-CONNECT:$SIGNING_AGENT_SOCKET" </dev/null >/dev/null 2>&1 &
-          SSH_AGENT_PROXY_PID=$!
-          DOCKER_ARGS+=(
-            -e "PI_SSH_AGENT_HOST=$HOST_ALIAS"
-            -e "PI_SSH_AGENT_PORT=$SSH_AGENT_PORT"
-            -v "$GIT_SIGNING_KEY_PATH:/home/pi/.ssh/git-signing.pub:ro"
-          )
+          if [[ -z "$SOCAT_BIND" ]]; then
+            echo "Warning: could not determine a container-reachable bind address for the SSH agent proxy; SSH commit signing is disabled." >&2
+            GIT_SIGNING_KEY_PATH=""
+          else
+            socat "TCP-LISTEN:$SSH_AGENT_PORT,bind=$SOCAT_BIND,reuseaddr,fork" "UNIX-CONNECT:$SIGNING_AGENT_SOCKET" </dev/null >/dev/null 2>&1 &
+            SSH_AGENT_PROXY_PID=$!
+            DOCKER_ARGS+=(
+              -e "PI_SSH_AGENT_HOST=$HOST_ALIAS"
+              -e "PI_SSH_AGENT_PORT=$SSH_AGENT_PORT"
+              -v "$GIT_SIGNING_KEY_PATH:/home/pi/.ssh/git-signing.pub:ro"
+            )
+          fi
         else
           echo "Warning: could not start a dedicated signing agent; SSH commit signing is disabled." >&2
           GIT_SIGNING_KEY_PATH=""

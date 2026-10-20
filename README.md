@@ -100,7 +100,7 @@ When launched by the extension, the wrapper additionally handles the bridge and 
 > **Requirements and limits**
 >
 > - The VS Code extension host must run on the same machine (and network namespace) as Docker. Remote SSH / Dev Container setups only work if the extension and Docker both run on that remote host and the bridge is reachable.
-> - The wrapper uses one host address for both the bridge and SSH agent: `host.docker.internal` on Docker Desktop/Podman, and `127.0.0.1` with `--network=host` on native Linux.
+> - The wrapper uses one host address for both the bridge and SSH agent: `host.docker.internal`. On Linux it is mapped to the Docker bridge gateway via `--add-host=host.docker.internal:host-gateway`; Docker Desktop provides it natively, while Podman may need equivalent configuration. Host networking is not used.
 > - Extension bridge tools see the same file paths as the host, which is why the project is mounted at its host path.
 > - The extension's **Upgrade Pi and Packages** command upgrades the host Pi, not the Pi installed in the container image. Bump the version in `Containerfile` and rebuild instead.
 
@@ -123,15 +123,15 @@ export OPENROUTER_API_KEY=...
 | `pi` | Bash wrapper — the main entry point, also bridge-aware for `pi0.pi-vscode` |
 | `Containerfile` | OCI image definition (Node.js 24 + Pi + `gh` CLI) |
 | `entrypoint` | Container entrypoint; optionally bridges the host SSH agent proxy |
-| `.dockerignore` | Excludes `.git`, env files, and editor debris from the build context |
+| `.dockerignore` | Excludes `.git`, env files, common credential files, and editor debris from the build context |
 
 ---
 
 ## Security notes
 
 - The container runs as an unprivileged user (`pi`). The wrapper passes your host UID/GID as build args so bind-mounted files keep their ownership and stay writable on native Linux. UID/GID 0 is rejected. The container also drops all capabilities, enables `no-new-privileges`, and applies CPU, memory, PID, and file-descriptor limits. This is still a local sandbox, not a hardened multi-tenant runtime.
-- For SSH commit signing, the wrapper starts a **fresh, isolated `ssh-agent` on the host** and loads only your git signing key into it — never your personal agent or other identities. It verifies the key pair by fingerprint first (locating the private key by content, not by filename), then shows the container a signature oracle via a short-lived `socat` TCP proxy. The private key itself is never mounted into the container, so a compromised agent can only request signatures with that one key. Independently, the configured `user.signingkey` *path* is the file that gets mounted; if it points at a private key, signing is refused rather than that file being mounted into the sandbox. Unix sockets cannot cross the Docker Desktop/Podman VM boundary, which is why the wrapper proxies the ephemeral agent socket. On Linux the container uses the default Docker network plus `host.docker.internal` (via `host-gateway`) rather than host networking, and the proxy binds to the Docker bridge gateway where it can be determined. If the key pair cannot be confirmed or the agent cannot be started, signing is disabled with a warning rather than failing at commit time.
-- The `.dockerignore` ensures that `.env` files and your local `.git` directory never enter the Docker build context.
+- For SSH commit signing, the wrapper starts a **fresh, isolated `ssh-agent` on the host** and loads only your git signing key into it — never your personal agent or other identities. It verifies the key pair by fingerprint first (locating the private key by content, not by filename), then shows the container a signature oracle via a short-lived `socat` TCP proxy. The private key itself is never mounted into the container, so a compromised agent can only request signatures with that one key. Independently, the configured `user.signingkey` *path* is the file that gets mounted; if it points at a private key, signing is refused rather than that file being mounted into the sandbox. Unix sockets cannot cross the Docker Desktop/Podman VM boundary, which is why the wrapper proxies the ephemeral agent socket. On Linux the container uses the default Docker network plus `host.docker.internal` (via `host-gateway`) rather than host networking, and the proxy binds to the Docker bridge gateway. On macOS it binds to host loopback, which Docker Desktop forwards via `host.docker.internal`; it is never bound to every interface. If the Docker bridge gateway cannot be determined on Linux, signing is disabled rather than exposing the proxy broadly. If the key pair cannot be confirmed or the agent cannot be started, signing is disabled with a warning rather than failing at commit time.
+- The `.dockerignore` keeps `.git`, `.env` files, common credential files, and editor debris out of the Docker build context. This reduces accidental disclosure to the Docker daemon/builder; it is not a substitute for keeping secrets outside the repository.
 
 ---
 
