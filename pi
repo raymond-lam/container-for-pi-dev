@@ -22,7 +22,7 @@
 #   • The current working directory → same absolute path (read/write)
 #   • Pi's agent state directory    → same absolute path (read/write)
 #   • Your OpenRouter API key       → injected as an environment variable
-#   • Git identity & SSH signing    → rewritten paths + forwarded SSH agent
+#   • Git identity & SSH signing    → rewritten paths + dedicated signing agent
 #   • GitHub CLI (gh) auth          → read-only mount of ~/.config/gh
 #   • VS Code bridge                → host.docker.internal + extension mount
 #
@@ -131,13 +131,20 @@ fi
 # the container's filesystem, and generate a brand-new config file.
 # ------------------------------------------------------------------------
 GIT_CONFIG_DIR=$(mktemp -d)
+SIGNING_AGENT_DIR=""
+SIGNING_AGENT_SOCKET=""
+SIGNING_AGENT_PID=""
 SSH_AGENT_PROXY_PID=""
 cleanup() {
-  rm -rf "$GIT_CONFIG_DIR"
   if [[ -n "$SSH_AGENT_PROXY_PID" ]]; then
     kill "$SSH_AGENT_PROXY_PID" 2>/dev/null || true
     wait "$SSH_AGENT_PROXY_PID" 2>/dev/null || true
   fi
+  if [[ -n "$SIGNING_AGENT_PID" ]]; then
+    kill "$SIGNING_AGENT_PID" 2>/dev/null || true
+    wait "$SIGNING_AGENT_PID" 2>/dev/null || true
+  fi
+  rm -rf "$GIT_CONFIG_DIR" "$SIGNING_AGENT_DIR"
 }
 trap cleanup EXIT
 
@@ -153,17 +160,55 @@ if command -v git >/dev/null 2>&1; then
     if grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$GIT_SIGNING_KEY_PATH"; then
       echo "Warning: user.signingkey points to a private key; not mounting it or signing commits." >&2
       GIT_SIGNING_KEY_PATH=""
-    elif [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]] && command -v socat >/dev/null 2>&1; then
-      SSH_AGENT_PORT="${PI_SSH_AGENT_PORT:-$((RANDOM % 16384 + 49152))}"
-      socat "TCP-LISTEN:$SSH_AGENT_PORT,bind=$SOCAT_BIND,reuseaddr,fork" "UNIX-CONNECT:$SSH_AUTH_SOCK" </dev/null >/dev/null 2>&1 &
-      SSH_AGENT_PROXY_PID=$!
-      DOCKER_ARGS+=(
-        -e "PI_SSH_AGENT_HOST=$HOST_ALIAS"
-        -e "PI_SSH_AGENT_PORT=$SSH_AGENT_PORT"
-        -v "$GIT_SIGNING_KEY_PATH:/home/pi/.ssh/git-signing.pub:ro"
-      )
+    elif command -v socat >/dev/null 2>&1; then
+      # Locate the private key pairing the configured signing key and verify
+      # the pair by fingerprint before enabling signing.
+      SIGNING_PRIVATE_KEY_PATH=""
+      if grep -q -- '-----BEGIN .*PRIVATE KEY-----' "$GIT_SIGNING_KEY_PATH" 2>/dev/null; then
+        SIGNING_PRIVATE_KEY_PATH="$GIT_SIGNING_KEY_PATH"
+      elif [[ "$GIT_SIGNING_KEY_PATH" == *.pub ]] && \
+           grep -q -- '-----BEGIN .*PRIVATE KEY-----' "${GIT_SIGNING_KEY_PATH%.pub}" 2>/dev/null; then
+        SIGNING_PRIVATE_KEY_PATH="${GIT_SIGNING_KEY_PATH%.pub}"
+      fi
+
+      SIGNING_PUBLIC_KEY_FINGERPRINT=""
+      SIGNING_PRIVATE_KEY_FINGERPRINT=""
+      if [[ -n "$SIGNING_PRIVATE_KEY_PATH" ]] && command -v ssh-keygen >/dev/null 2>&1; then
+        SIGNING_PUBLIC_KEY_FINGERPRINT="$(ssh-keygen -lf "$GIT_SIGNING_KEY_PATH" 2>/dev/null | awk '{print $2}' || true)"
+        SIGNING_PRIVATE_KEY_FINGERPRINT="$(ssh-keygen -y -f "$SIGNING_PRIVATE_KEY_PATH" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' || true)"
+      fi
+
+      if [[ -n "$SIGNING_PUBLIC_KEY_FINGERPRINT" && -n "$SIGNING_PRIVATE_KEY_FINGERPRINT" && "$SIGNING_PRIVATE_KEY_FINGERPRINT" == "$SIGNING_PUBLIC_KEY_FINGERPRINT" ]]; then
+        # Run a fresh, isolated agent holding only the git signing key, rather
+        # than forwarding the host's personal agent. The sandbox (and any
+        # compromise) can then only ever request signatures with that one key.
+        if command -v ssh-agent >/dev/null 2>&1 && command -v ssh-add >/dev/null 2>&1; then
+          SIGNING_AGENT_DIR="$(mktemp -d)"
+          SIGNING_AGENT_SOCKET="$SIGNING_AGENT_DIR/signing-agent.sock"
+          SIGNING_AGENT_VARS="$(ssh-agent -a "$SIGNING_AGENT_SOCKET" 2>/dev/null)"
+          SIGNING_AGENT_PID="$(printf '%s\n' "$SIGNING_AGENT_VARS" | sed -n 's/^SSH_AGENT_PID=\([0-9][0-9]*\);.*/\1/p')"
+        fi
+
+        if [[ -S "$SIGNING_AGENT_SOCKET" ]] \
+           && SSH_AUTH_SOCK="$SIGNING_AGENT_SOCKET" ssh-add "$SIGNING_PRIVATE_KEY_PATH" </dev/null >/dev/null 2>&1; then
+          SSH_AGENT_PORT="${PI_SSH_AGENT_PORT:-$((RANDOM % 16384 + 49152))}"
+          socat "TCP-LISTEN:$SSH_AGENT_PORT,bind=$SOCAT_BIND,reuseaddr,fork" "UNIX-CONNECT:$SIGNING_AGENT_SOCKET" </dev/null >/dev/null 2>&1 &
+          SSH_AGENT_PROXY_PID=$!
+          DOCKER_ARGS+=(
+            -e "PI_SSH_AGENT_HOST=$HOST_ALIAS"
+            -e "PI_SSH_AGENT_PORT=$SSH_AGENT_PORT"
+            -v "$GIT_SIGNING_KEY_PATH:/home/pi/.ssh/git-signing.pub:ro"
+          )
+        else
+          echo "Warning: could not start a dedicated signing agent; SSH commit signing is disabled." >&2
+          GIT_SIGNING_KEY_PATH=""
+        fi
+      else
+        echo "Warning: could not confirm a private key for 'user.signingkey'; SSH commit signing is disabled." >&2
+        GIT_SIGNING_KEY_PATH=""
+      fi
     else
-      echo "Warning: socat/SSH agent unavailable; SSH commit signing is disabled." >&2
+      echo "Warning: socat unavailable; SSH commit signing is disabled." >&2
       GIT_SIGNING_KEY_PATH=""
     fi
   fi

@@ -48,8 +48,8 @@ The first invocation builds the image; subsequent runs are instant thanks to Doc
 | `~/.pi/agent` | Same as host | Persistent agent state across runs |
 | OpenRouter API key | `OPENROUTER_API_KEY` env var | From the environment, or fetched from macOS Keychain |
 | Git `user.name` / `user.email` | `/home/pi/.gitconfig` | Rewritten with container-native paths |
-| Git SSH signing public key | `/home/pi/.ssh/git-signing.pub` | Only the specific public key file is shared; a private key path is rejected |
-| Host SSH agent | `SSH_AUTH_SOCK` env var | Forwarded via a short-lived `socat` TCP proxy so `ssh-keygen` can sign; private keys are never mounted |
+| Git SSH signing public key | `/home/pi/.ssh/git-signing.pub` | Only the configured public key file is mounted; a `user.signingkey` that points at a private key is refused rather than mounted. The key pair is verified by fingerprint before signing is enabled |
+| Dedicated SSH signing agent | proxy → ephemeral agent socket | A fresh `ssh-agent` holding only the git signing key is started on the host and proxied via a short-lived `socat` proxy; your personal SSH agent and all private keys stay on the host and are never passed to the container |
 | Git `allowed_signers` | `/home/pi/.config/git/allowed_signers` | For SSH signature verification |
 | `gh` config (`~/.config/gh`) | `/home/pi/.config/gh` | Read-only settings, aliases, etc. |
 | `gh` OAuth token | `GH_TOKEN` env var | Retrieved from host keychain via `gh auth token` and injected so `gh` works without a container login; git uses it for GitHub HTTPS auth via the `gh` credential helper |
@@ -130,7 +130,7 @@ export OPENROUTER_API_KEY=...
 ## Security notes
 
 - The container runs as an unprivileged user (`pi`). The wrapper passes your host UID/GID as build args so bind-mounted files keep their ownership and stay writable on native Linux. This is still a local sandbox, not a hardened multi-tenant runtime.
-- The host SSH agent socket is forwarded so `ssh-keygen` can produce signatures without mounting private keys. Unix sockets cannot cross the Docker Desktop/Podman VM boundary, so the wrapper uses a short-lived `socat` TCP proxy and recreates the socket inside the container. On native Linux the proxy binds to loopback under host networking; on VM-based runtimes it binds all interfaces for the duration of the run. The wrapper refuses to mount a private key even if `user.signingkey` points at one. The agent can sign with any key it holds, so only keep the keys you intend to use loaded. On macOS, make sure the signing key is available via `ssh-add --apple-use-keychain <key>`.
+- For SSH commit signing, the wrapper starts a **fresh, isolated `ssh-agent` on the host** and loads only your git signing key into it — never your personal agent or other identities. It verifies the key pair by fingerprint first (locating the private key by content, not by filename), then shows the container a signature oracle via a short-lived `socat` TCP proxy. The private key itself is never mounted into the container, so a compromised agent can only request signatures with that one key. Independently, the configured `user.signingkey` *path* is the file that gets mounted; if it points at a private key, signing is refused rather than that file being mounted into the sandbox. Unix sockets cannot cross the Docker Desktop/Podman VM boundary, which is why the wrapper proxies the ephemeral agent socket. On native Linux the proxy binds to loopback under host networking; on VM-based runtimes it binds all interfaces for the duration of the run. If the key pair cannot be confirmed or the agent cannot be started, signing is disabled with a warning rather than failing at commit time.
 - The `.dockerignore` ensures that `.env` files and your local `.git` directory never enter the Docker build context.
 
 ---
