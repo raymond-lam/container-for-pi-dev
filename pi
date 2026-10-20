@@ -42,6 +42,13 @@ set -euo pipefail
 SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 IMAGE=localhost/pi-sandbox
 PLATFORM="$(uname -s)"
+APP_UID="$(id -u)"
+APP_GID="$(id -g)"
+
+if [[ "$APP_UID" -eq 0 || "$APP_GID" -eq 0 ]]; then
+  echo "Error: refusing to run as root; the container user mirrors the host UID/GID." >&2
+  exit 1
+fi
 
 # ------------------------------------------------------------------------
 # Build the image
@@ -50,10 +57,12 @@ PLATFORM="$(uname -s)"
 # this essentially free when nothing has changed.
 # Build output goes to stderr so `pi --mode rpc` stdout stays parseable.
 # The container user is built with the invoking user's UID/GID so bind-mounted
-# files keep their ownership and remain writable on native Linux.
+# files keep their ownership and remain writable on native Linux. This cannot
+# be hard-coded to 1000: Docker bind mounts preserve numeric ownership, so a
+# host user with a different UID/GID would be unable to write the mounted files.
 docker build \
-  --build-arg "APP_UID=$(id -u)" \
-  --build-arg "APP_GID=$(id -g)" \
+  --build-arg "APP_UID=$APP_UID" \
+  --build-arg "APP_GID=$APP_GID" \
   -f Containerfile -t "$IMAGE" "$SCRIPT_DIR" >&2
 
 # ------------------------------------------------------------------------
@@ -74,6 +83,12 @@ export OPENROUTER_API_KEY
 
 DOCKER_ARGS=(
   run --rm
+  --cap-drop=ALL
+  --security-opt=no-new-privileges
+  --pids-limit="${PI_PIDS_LIMIT:-512}"
+  --memory="${PI_MEMORY:-4g}"
+  --cpus="${PI_CPUS:-2}"
+  --ulimit "nofile=${PI_NOFILE_SOFT:-4096}:${PI_NOFILE_HARD:-8192}"
   -e OPENROUTER_API_KEY
   -v "$PWD:$PWD"
   -w "$PWD"
@@ -81,17 +96,53 @@ DOCKER_ARGS=(
   -e "PI_CODING_AGENT_DIR=${HOME}/.pi/agent"
 )
 
-# Use one address for host services everywhere. Native Linux uses host
-# networking so 127.0.0.1 reaches the host; VM-based runtimes use the
-# host.docker.internal alias.
+# Use host.docker.internal on both platforms instead of host networking.
+# On Linux, host-gateway resolves it to the Docker bridge gateway. Host
+# services are still reachable, but the container no longer shares the host
+# network namespace (and therefore cannot reach host loopback-only services).
+HOST_ALIAS=host.docker.internal
+SOCAT_BIND=0.0.0.0
 if [[ "$PLATFORM" == "Linux" ]]; then
-  HOST_ALIAS=127.0.0.1
-  SOCAT_BIND=127.0.0.1
-  DOCKER_ARGS+=(--network=host)
-else
-  HOST_ALIAS=host.docker.internal
-  SOCAT_BIND=0.0.0.0
+  DOCKER_ARGS+=(--add-host=host.docker.internal:host-gateway)
+  # Prefer binding proxies to the bridge gateway rather than every interface.
+  DOCKER_GATEWAY="$(docker network inspect bridge \
+    --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+  [[ -n "$DOCKER_GATEWAY" ]] && SOCAT_BIND="$DOCKER_GATEWAY"
 fi
+
+# ------------------------------------------------------------------------
+# Process cleanup
+# ------------------------------------------------------------------------
+# Install the trap before starting any background proxies.
+# ------------------------------------------------------------------------
+GIT_CONFIG_DIR=$(mktemp -d)
+BRIDGE_RELAY_PID=""
+SIGNING_AGENT_DIR=""
+SIGNING_AGENT_SOCKET=""
+SIGNING_AGENT_PID=""
+SSH_AGENT_PROXY_PID=""
+
+kill_tree() {
+  local TARGET_PID="${1:-}"
+  [[ -n "$TARGET_PID" ]] || return 0
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -TERM -P "$TARGET_PID" 2>/dev/null || true
+  fi
+  kill -TERM "$TARGET_PID" 2>/dev/null || true
+  wait "$TARGET_PID" 2>/dev/null || true
+}
+
+cleanup() {
+  trap - EXIT INT TERM HUP
+  kill_tree "$BRIDGE_RELAY_PID"
+  kill_tree "$SSH_AGENT_PROXY_PID"
+  kill_tree "$SIGNING_AGENT_PID"
+  rm -rf "$GIT_CONFIG_DIR" "$SIGNING_AGENT_DIR"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 # ------------------------------------------------------------------------
 # VS Code bridge
@@ -102,8 +153,28 @@ fi
 # the bridge.
 # ------------------------------------------------------------------------
 if [[ -n "${PI_VSCODE_BRIDGE_URL:-}" ]]; then
-  PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/127.0.0.1/$HOST_ALIAS}"
-  PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/localhost/$HOST_ALIAS}"
+  # On Linux the bridge no longer shares the host network namespace. If the
+  # extension advertises a host-loopback URL, relay it through a small TCP
+  # proxy bound to the Docker bridge gateway (still protected by the bridge
+  # token). macOS/Windows Docker already maps host.docker.internal for us.
+  if [[ "$PLATFORM" == "Linux" && "$PI_VSCODE_BRIDGE_URL" =~ ^(https?)://(127\.0\.0\.1|localhost):([0-9]+)(.*)$ ]]; then
+    BRIDGE_SCHEME="${BASH_REMATCH[1]}"
+    BRIDGE_HOST_PORT="${BASH_REMATCH[3]}"
+    BRIDGE_REST="${BASH_REMATCH[4]}"
+    BRIDGE_RELAY_PORT="$((RANDOM % 16384 + 49152))"
+    socat "TCP-LISTEN:$BRIDGE_RELAY_PORT,bind=$SOCAT_BIND,reuseaddr,fork" \
+      "TCP:127.0.0.1:$BRIDGE_HOST_PORT" </dev/null >/dev/null 2>&1 &
+    BRIDGE_RELAY_PID=$!
+    sleep 0.1
+    if ! kill -0 "$BRIDGE_RELAY_PID" 2>/dev/null; then
+      echo "Error: could not start the VS Code bridge relay on port $BRIDGE_RELAY_PORT." >&2
+      exit 1
+    fi
+    PI_VSCODE_BRIDGE_URL="$BRIDGE_SCHEME://$HOST_ALIAS:$BRIDGE_RELAY_PORT$BRIDGE_REST"
+  else
+    PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/127.0.0.1/$HOST_ALIAS}"
+    PI_VSCODE_BRIDGE_URL="${PI_VSCODE_BRIDGE_URL/localhost/$HOST_ALIAS}"
+  fi
   DOCKER_ARGS+=(-e "PI_VSCODE_BRIDGE_URL=$PI_VSCODE_BRIDGE_URL")
   DOCKER_ARGS+=(-e PI_VSCODE_BRIDGE_TOKEN -e PI_VSCODE_TERMINAL_ID)
 
@@ -130,24 +201,6 @@ fi
 # Instead we read the values we need from the host, rewrite the paths for
 # the container's filesystem, and generate a brand-new config file.
 # ------------------------------------------------------------------------
-GIT_CONFIG_DIR=$(mktemp -d)
-SIGNING_AGENT_DIR=""
-SIGNING_AGENT_SOCKET=""
-SIGNING_AGENT_PID=""
-SSH_AGENT_PROXY_PID=""
-cleanup() {
-  if [[ -n "$SSH_AGENT_PROXY_PID" ]]; then
-    kill "$SSH_AGENT_PROXY_PID" 2>/dev/null || true
-    wait "$SSH_AGENT_PROXY_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$SIGNING_AGENT_PID" ]]; then
-    kill "$SIGNING_AGENT_PID" 2>/dev/null || true
-    wait "$SIGNING_AGENT_PID" 2>/dev/null || true
-  fi
-  rm -rf "$GIT_CONFIG_DIR" "$SIGNING_AGENT_DIR"
-}
-trap cleanup EXIT
-
 if command -v git >/dev/null 2>&1; then
   GIT_USER_NAME=$(git config --global user.name)
   GIT_USER_EMAIL=$(git config --global user.email)
@@ -213,11 +266,20 @@ if command -v git >/dev/null 2>&1; then
     fi
   fi
 
-  cat > "$GIT_CONFIG_DIR/gitconfig" <<EOF
-[user]
-  $( [[ -n "$GIT_USER_NAME" ]] && echo "name = $GIT_USER_NAME" )
-  $( [[ -n "$GIT_USER_EMAIL" ]] && echo "email = $GIT_USER_EMAIL" )
-EOF
+  # Use git itself so values containing newlines or special characters are
+  # escaped instead of being interpolated into the config file.
+  : > "$GIT_CONFIG_DIR/gitconfig"
+  if [[ -n "$GIT_USER_NAME" ]]; then
+    git config --file "$GIT_CONFIG_DIR/gitconfig" user.name "$GIT_USER_NAME"
+  fi
+  if [[ -n "$GIT_USER_EMAIL" ]]; then
+    git config --file "$GIT_CONFIG_DIR/gitconfig" user.email "$GIT_USER_EMAIL"
+  fi
+  # The signingkey line below belongs to [user]; ensure the section exists even
+  # when the host has no name/email configured.
+  if [[ -n "$GIT_SIGNING_KEY_PATH" ]] && ! grep -q '^\[user\]' "$GIT_CONFIG_DIR/gitconfig"; then
+    printf '[user]\n' >> "$GIT_CONFIG_DIR/gitconfig"
+  fi
   if [[ -n "$GIT_SIGNING_KEY_PATH" ]]; then
     cat >> "$GIT_CONFIG_DIR/gitconfig" <<EOF
   signingkey = /home/pi/.ssh/git-signing.pub
@@ -257,8 +319,10 @@ fi
 # the host via `gh auth token` and inject it as GH_TOKEN. Inside the
 # container `gh` prefers GH_TOKEN over the keychain.
 # ------------------------------------------------------------------------
-if [[ -d "$HOME/.config/gh" ]]; then
-  DOCKER_ARGS+=(-v "$HOME/.config/gh:/home/pi/.config/gh:ro")
+# Only mount config.yml. hosts.yml contains plaintext OAuth tokens on Linux
+# (and possibly credentials for multiple hosts); GH_TOKEN is already injected.
+if [[ -f "$HOME/.config/gh/config.yml" ]]; then
+  DOCKER_ARGS+=(-v "$HOME/.config/gh/config.yml:/home/pi/.config/gh/config.yml:ro")
 fi
 
 if command -v gh >/dev/null 2>&1; then

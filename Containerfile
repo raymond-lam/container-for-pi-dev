@@ -79,7 +79,7 @@ RUN userdel -r node 2>/dev/null || true \
   && groupadd -o --gid "${APP_GID}" pi \
   && useradd -o --uid "${APP_UID}" --gid "${APP_GID}" \
        --create-home --shell /bin/bash pi \
-  && mkdir -p /home/pi/.config/git /home/pi/.ssh /run/pi \
+  && mkdir -p /home/pi/.config/git /home/pi/.config/gh /home/pi/.ssh /run/pi \
   && chown -R "${APP_UID}:${APP_GID}" /home/pi /run/pi \
   && chmod 700 /home/pi/.ssh
 
