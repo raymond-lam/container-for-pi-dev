@@ -37,7 +37,7 @@ FROM node:24-bookworm-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash=5.2.15-2+b13 \
-    ca-certificates=20250419~deb12u1 \
+    ca-certificates=20230311+deb12u1 \
     curl=7.88.1-10+deb12u15 \
     git=1:2.39.5-0+deb12u3 \
     gnupg=2.2.40-1.1+deb12u2 \
@@ -56,7 +56,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
     > /etc/apt/sources.list.d/github-cli.list \
   && apt-get update \
-  && apt-get install -y --no-install-recommends gh=2.102.0 \
+  && apt-get install -y --no-install-recommends gh=2.102.1 \
   && rm -rf /var/lib/apt/lists/*
 
 # Install the pi coding agent globally. --ignore-scripts is used because
