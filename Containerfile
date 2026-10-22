@@ -61,7 +61,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # Install the pi coding agent globally. --ignore-scripts is used because
 # the package does not require any post-install lifecycle scripts.
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0
 
 # Run as an unprivileged user whose UID/GID can be aligned with the host
 # (the wrapper passes the invoking user's IDs as build args). Matching the
