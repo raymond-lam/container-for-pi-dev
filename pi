@@ -123,29 +123,64 @@ fi
 # ------------------------------------------------------------------------
 # Install the trap before starting any background proxies.
 # ------------------------------------------------------------------------
-GIT_CONFIG_DIR=$(mktemp -d)
+# The generated git config is bind-mounted into the container, so it must live
+# where Docker can see it. Docker Desktop does not share $TMPDIR
+# (/var/folders/... on macOS); $HOME is shared on both platforms, so the temp
+# dir lives under ~/.pi. mkdir -p is needed because mktemp -d only creates the
+# last path component.
+mkdir -p "${HOME}/.pi/tmp"
+GIT_CONFIG_DIR=$(mktemp -d "${HOME}/.pi/tmp/pi-gitconfig.XXXXXXXX")
 BRIDGE_RELAY_PID=""
 SIGNING_AGENT_DIR=""
 SIGNING_AGENT_SOCKET=""
 SIGNING_AGENT_PID=""
 SSH_AGENT_PROXY_PID=""
 
-kill_tree() {
-  local TARGET_PID="${1:-}"
-  [[ -n "$TARGET_PID" ]] || return 0
-  if command -v pkill >/dev/null 2>&1; then
-    pkill -TERM -P "$TARGET_PID" 2>/dev/null || true
-  fi
-  kill -TERM "$TARGET_PID" 2>/dev/null || true
-  wait "$TARGET_PID" 2>/dev/null || true
+# Teardown registry: what must be stopped and what must be deleted. Populated
+# wherever a background process starts or a temp dir is created, so no call site
+# has to know the full list. See teardown below for the argument convention.
+TEARDOWN_PIDS=()
+TEARDOWN_DIRS=("$GIT_CONFIG_DIR")
+
+# teardown is the only place that undoes what the wrapper created. It is used
+# twice: by the EXIT trap, for failures before the launch, and by the cleaner
+# process, for the normal exit path after `exec docker` (which no longer has a
+# shell that could run a trap). Arguments are PIDs to stop up to a "--"
+# separator, then paths to delete.
+#
+# The cleaner runs the same function from a fresh bash, which only works because
+# it is exported and because the cleaner re-executes $BASH rather than whatever
+# `bash` happens to be on PATH; function import between different bash versions
+# is not reliable.
+#
+# What has to be stopped and what has to be deleted is declared once: append to
+# these where the process starts or the directory is created, and never build a
+# hand-written list at a call site.
+teardown() {
+  local PAST_SEPARATOR=""
+  local ARG
+  for ARG in "$@"; do
+    if [[ -n "$PAST_SEPARATOR" ]]; then
+      rm -rf "$ARG"
+    elif [[ "$ARG" == "--" ]]; then
+      PAST_SEPARATOR=1
+    else
+      # Background proxies fork per connection; stop the children first so the
+      # listener cannot respawn one while it is being torn down.
+      pkill -TERM -P "$ARG" 2>/dev/null || true
+      kill -TERM "$ARG" 2>/dev/null || true
+    fi
+  done
+  return 0
 }
+export -f teardown
 
 cleanup() {
   trap - EXIT INT TERM HUP
-  kill_tree "$BRIDGE_RELAY_PID"
-  kill_tree "$SSH_AGENT_PROXY_PID"
-  kill_tree "$SIGNING_AGENT_PID"
-  rm -rf "$GIT_CONFIG_DIR" "$SIGNING_AGENT_DIR"
+  # The "...:-" expansion keeps an empty array from tripping `set -u` on the
+  # bash 3.2 shipped with macOS, where "${arr[@]}" on an empty array errors out.
+  teardown "${TEARDOWN_PIDS[@]:-}" -- "${TEARDOWN_DIRS[@]:-}"
+  return 0
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -177,6 +212,7 @@ if [[ -n "${PI_VSCODE_BRIDGE_URL:-}" ]]; then
     socat "TCP-LISTEN:$BRIDGE_RELAY_PORT,bind=$SOCAT_BIND,reuseaddr,fork" \
       "TCP:127.0.0.1:$BRIDGE_HOST_PORT" </dev/null >/dev/null 2>&1 &
     BRIDGE_RELAY_PID=$!
+    TEARDOWN_PIDS+=("$BRIDGE_RELAY_PID")
     sleep 0.1
     if ! kill -0 "$BRIDGE_RELAY_PID" 2>/dev/null; then
       echo "Error: could not start the VS Code bridge relay on port $BRIDGE_RELAY_PORT." >&2
@@ -249,9 +285,11 @@ if command -v git >/dev/null 2>&1; then
         # compromise) can then only ever request signatures with that one key.
         if command -v ssh-agent >/dev/null 2>&1 && command -v ssh-add >/dev/null 2>&1; then
           SIGNING_AGENT_DIR="$(mktemp -d)"
+          TEARDOWN_DIRS+=("$SIGNING_AGENT_DIR")
           SIGNING_AGENT_SOCKET="$SIGNING_AGENT_DIR/signing-agent.sock"
           SIGNING_AGENT_VARS="$(ssh-agent -a "$SIGNING_AGENT_SOCKET" 2>/dev/null)"
           SIGNING_AGENT_PID="$(printf '%s\n' "$SIGNING_AGENT_VARS" | sed -n 's/^SSH_AGENT_PID=\([0-9][0-9]*\);.*/\1/p')"
+          TEARDOWN_PIDS+=("$SIGNING_AGENT_PID")
         fi
 
         if [[ -S "$SIGNING_AGENT_SOCKET" ]] \
@@ -263,6 +301,7 @@ if command -v git >/dev/null 2>&1; then
           else
             socat "TCP-LISTEN:$SSH_AGENT_PORT,bind=$SOCAT_BIND,reuseaddr,fork" "UNIX-CONNECT:$SIGNING_AGENT_SOCKET" </dev/null >/dev/null 2>&1 &
             SSH_AGENT_PROXY_PID=$!
+            TEARDOWN_PIDS+=("$SSH_AGENT_PROXY_PID")
             DOCKER_ARGS+=(
               -e "PI_SSH_AGENT_HOST=$HOST_ALIAS"
               -e "PI_SSH_AGENT_PORT=$SSH_AGENT_PORT"
@@ -379,6 +418,59 @@ fi
 # ------------------------------------------------------------------------
 # Launch
 # ------------------------------------------------------------------------
-# Run docker as a child rather than exec'ing it so the EXIT trap fires and
-# removes the temporary git config and shuts down the agent proxy.
-docker "${DOCKER_ARGS[@]}" "$IMAGE" pi "$@"
+# Hand cleanup to a detached cleaner, then exec docker. Exec'ing makes docker
+# the process the caller signalled (so SIGTERM to this PID stops the container,
+# which it could not do when docker was a child), keeps the exit status exact,
+# and removes one process from the terminal path.
+#
+# A plain exec skips the EXIT trap, so the socat relays, the signing agent and
+# the temporary git config would leak. The cleaner below blocks reading a FIFO
+# until every writer is gone, which happens exactly when docker exits.
+#
+# The pipe must be a named FIFO opened with a plain redirection, not process
+# substitution: bash marks process-substitution descriptors close-on-exec, so an
+# `exec 9> >(...)` pipe is closed the instant docker starts, the cleaner sees
+# an immediate EOF and deletes the git config before docker can mount it (this
+# is what macOS /bin/bash 3.2 does). A FIFO opened via `exec 9> path` is an
+# ordinary redirection, survives exec, and needs no polling.
+CLEANUP_FIFO="$GIT_CONFIG_DIR/cleanup.fifo"
+rm -f "$CLEANUP_FIFO"
+mkfifo -m 600 "$CLEANUP_FIFO"
+# Start the cleaner from a subshell that exits immediately. The subshell forks
+# it and is gone before `exec docker` runs, so the cleaner is reparented to init
+# instead of becoming a child of docker — a direct `&` here would be adopted by
+# docker after the exec, where docker's runtime could reap it and where it would
+# share the container process tree it is supposed to outlive.
+(
+  "$BASH" -c '
+    # Open the FIFO read end on fd 3. Opening a FIFO for reading blocks until a
+    # writer opens it, which is the `exec 9>` below, so the two sides cannot
+    # race; if the path has vanished there is nothing to wait for.
+    exec 3< "$1" || exit 0
+    shift
+    # Blocking read: returns only once every writer has closed the FIFO, which
+    # happens when docker exits. The data is irrelevant, only the EOF is.
+    cat <&3 >/dev/null 2>&1
+    # docker is gone, so undo what the wrapper created, exactly as the EXIT
+    # trap would.
+    teardown "$@"
+  ' pi-cleanup \
+    "$CLEANUP_FIFO" \
+    "${TEARDOWN_PIDS[@]:-}" \
+    -- "${TEARDOWN_DIRS[@]:-}" </dev/null >/dev/null 2>&1 &
+)
+# Blocks only until the cleaner opens its read end, which it is already waiting
+# to do. Docker inherits this writer; when it exits the FIFO reports EOF and the
+# cleaner tears down the relays, agent and temp dirs.
+exec 9> "$CLEANUP_FIFO"
+rm -f "$CLEANUP_FIFO"
+
+# Hand cleanup ownership to the cleaner now that it is armed. The EXIT trap above
+# still covers every failure before this point, but from here it must not run
+# too: if exec fails, or a signal lands before it, two processes would race on
+# the same teardown. Dropping the traps loses nothing, because `exec 9>` cannot
+# return until the cleaner has its read end open, so the cleaner is already
+# running and will see EOF whenever this process goes away.
+trap - EXIT INT TERM HUP
+
+exec docker "${DOCKER_ARGS[@]}" "$IMAGE" pi "$@"
