@@ -81,8 +81,13 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
 fi
 export OPENROUTER_API_KEY
 
+# Name the container (random number suffix) so cleanup can stop and remove
+# it if it is still around when teardown runs.
+CONTAINER_NAME="pi-sandbox-$((RANDOM))$((RANDOM))"
+
 DOCKER_ARGS=(
   run --rm
+  --name "$CONTAINER_NAME"
   --cap-drop=ALL
   --security-opt=no-new-privileges
   --pids-limit="${PI_PIDS_LIMIT:-512}"
@@ -141,12 +146,21 @@ SSH_AGENT_PROXY_PID=""
 # has to know the full list. See teardown below for the argument convention.
 TEARDOWN_PIDS=()
 TEARDOWN_DIRS=("$GIT_CONFIG_DIR")
+# Containers created by this wrapper, torn down with `docker rm -f`. Populated
+# only when the container actually launches (see the Launch section), so the
+# EXIT trap cannot touch a container that was never started.
+TEARDOWN_CONTAINERS=()
 
 # teardown is the only place that undoes what the wrapper created. It is used
 # twice: by the EXIT trap, for failures before the launch, and by the cleaner
 # process, for the normal exit path after `exec docker` (which no longer has a
 # shell that could run a trap). Arguments are PIDs to stop up to a "--"
 # separator, then paths to delete.
+#
+# Before the "--" separator, a token starting with "container:" is a container
+# name: `docker rm -f` both stops it (if running) and removes it (unless
+# `--rm` already did), and is a no-op if it never existed. Container names
+# cannot start with a digit or hyphen, so this never collides with a PID.
 #
 # The cleaner runs the same function from a fresh bash, which only works because
 # it is exported and because the cleaner re-executes $BASH rather than whatever
@@ -164,6 +178,8 @@ teardown() {
       rm -rf "$ARG"
     elif [[ "$ARG" == "--" ]]; then
       PAST_SEPARATOR=1
+    elif [[ "$ARG" == container:* ]]; then
+      docker rm -f "${ARG#container:}" >/dev/null 2>&1 || true
     else
       # Background proxies fork per connection; stop the children first so the
       # listener cannot respawn one while it is being torn down.
@@ -179,7 +195,7 @@ cleanup() {
   trap - EXIT INT TERM HUP
   # The "...:-" expansion keeps an empty array from tripping `set -u` on the
   # bash 3.2 shipped with macOS, where "${arr[@]}" on an empty array errors out.
-  teardown "${TEARDOWN_PIDS[@]:-}" -- "${TEARDOWN_DIRS[@]:-}"
+  teardown "${TEARDOWN_PIDS[@]:-}" "${TEARDOWN_CONTAINERS[@]:-}" -- "${TEARDOWN_DIRS[@]:-}"
   return 0
 }
 trap cleanup EXIT
@@ -457,6 +473,7 @@ mkfifo -m 600 "$CLEANUP_FIFO"
   ' pi-cleanup \
     "$CLEANUP_FIFO" \
     "${TEARDOWN_PIDS[@]:-}" \
+    "${TEARDOWN_CONTAINERS[@]:-}" \
     -- "${TEARDOWN_DIRS[@]:-}" </dev/null >/dev/null 2>&1 &
 )
 # Blocks only until the cleaner opens its read end, which it is already waiting
@@ -464,6 +481,9 @@ mkfifo -m 600 "$CLEANUP_FIFO"
 # cleaner tears down the relays, agent and temp dirs.
 exec 9> "$CLEANUP_FIFO"
 rm -f "$CLEANUP_FIFO"
+
+# From here the container exists, so every teardown path must remove it.
+TEARDOWN_CONTAINERS+=("container:$CONTAINER_NAME")
 
 # Hand cleanup ownership to the cleaner now that it is armed. The EXIT trap above
 # still covers every failure before this point, but from here it must not run
