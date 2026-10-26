@@ -92,6 +92,8 @@ DOCKER_ARGS=(
   --security-opt=no-new-privileges
   --pids-limit="${PI_PIDS_LIMIT:-512}"
   --memory="${PI_MEMORY:-4g}"
+  --memory-swap="${PI_MEMORY:-4g}"
+  --shm-size="${PI_SHM_SIZE:-64m}"
   --cpus="${PI_CPUS:-2}"
   --ulimit "nofile=${PI_NOFILE_SOFT:-4096}:${PI_NOFILE_HARD:-8192}"
   -e OPENROUTER_API_KEY

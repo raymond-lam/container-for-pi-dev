@@ -88,10 +88,13 @@ The wrapper reads optional environment variables with safe defaults:
 | Variable | Default | Purpose |
 |---|---|---|
 | `PI_CPUS` | `2` | Container CPU limit |
-| `PI_MEMORY` | `4g` | Container memory limit |
+| `PI_MEMORY` | `4g` | Container memory and memory-plus-swap limit |
+| `PI_SHM_SIZE` | `64m` | `/dev/shm` size; raise for browser-based tests (e.g. `256m`) |
 | `PI_PIDS_LIMIT` | `512` | Container PID limit |
 | `PI_NOFILE_SOFT` / `PI_NOFILE_HARD` | `4096` / `8192` | File-descriptor ulimit (soft/hard) |
 | `PI_SSH_AGENT_PORT` | ephemeral | Fixed port for the SSH signing agent proxy, if you need one |
+
+`PI_MEMORY` is a ceiling, not a reservation. It also sets the total memory-plus-swap limit, so the container may be OOM-killed under memory pressure instead of consuming additional swap; lower it for small Docker hosts or VMs. `PI_PIDS_LIMIT` can be raised for unusually heavy parallel workloads. `PI_SHM_SIZE` keeps Docker's 64 MiB default unless increased; shared-memory use still counts against `PI_MEMORY`.
 
 The script refuses to run as root (host UID/GID 0); the container user mirrors your host UID/GID via build args so bind-mounted files stay writable and owned by you.
 
@@ -150,7 +153,7 @@ export OPENROUTER_API_KEY=...
 
 ## Security notes
 
-- The container runs as an unprivileged user (`pi`). The wrapper passes your host UID/GID as build args so bind-mounted files keep their ownership and stay writable on native Linux. UID/GID 0 is rejected. The container also drops all capabilities, enables `no-new-privileges`, and applies CPU, memory, PID, and file-descriptor limits. This is still a local sandbox, not a hardened multi-tenant runtime.
+- The container runs as an unprivileged user (`pi`). The wrapper passes your host UID/GID as build args so bind-mounted files keep their ownership and stay writable on native Linux. UID/GID 0 is rejected. The container also drops all capabilities, enables `no-new-privileges`, and applies CPU, memory, PID, shared-memory, and file-descriptor limits. The memory-plus-swap limit is pinned to `PI_MEMORY`; if the container reaches it, the kernel may OOM-kill a process rather than letting it consume extra swap. This is still a local sandbox, not a hardened multi-tenant runtime.
 - For SSH commit signing, the wrapper starts a **fresh, isolated `ssh-agent` on the host** and loads only your git signing key into it — never your personal agent or other identities. It verifies the key pair by fingerprint first (locating the private key by content, not by filename), then shows the container a signature oracle via a short-lived `socat` TCP proxy. The private key itself is never mounted into the container, so a compromised agent can only request signatures with that one key. Independently, the configured `user.signingkey` *path* is the file that gets mounted; if it points at a private key, signing is refused rather than that file being mounted into the sandbox. Unix sockets cannot cross the Docker Desktop/Podman VM boundary, which is why the wrapper proxies the ephemeral agent socket. On Linux the container uses the default Docker network plus `host.docker.internal` (via `host-gateway`) rather than host networking, and the proxy binds to the Docker bridge gateway. On macOS it binds to host loopback, which Docker Desktop forwards via `host.docker.internal`; it is never bound to every interface. If the Docker bridge gateway cannot be determined on Linux, signing is disabled rather than exposing the proxy broadly. If the key pair cannot be confirmed or the agent cannot be started, signing is disabled with a warning rather than failing at commit time.
 - The SSH-agent signing proxy is an unauthenticated signature oracle bound to host loopback (macOS) or the Docker bridge gateway (Linux): anything that can reach that address can request signatures with the one loaded signing key. This is a deliberate trade-off — the blast radius is limited to a single, dedicated key — but it is why the proxy is never bound to all interfaces.
 - The `.dockerignore` keeps `.git`, `.env` files, common credential files, and editor debris out of the Docker build context. This reduces accidental disclosure to the Docker daemon/builder; it is not a substitute for keeping secrets outside the repository.

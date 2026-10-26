@@ -79,7 +79,7 @@ shellcheck pi       # if available — strongly recommended
 ### Updating dependencies
 - **Pi agent version:** bump the version in `Containerfile` (`npm install -g @earendil-works/pi-coding-agent@X.Y.Z`).
 - **System packages:** pin Debian versions in the `apt-get install` line to keep builds reproducible.
-- **GitHub CLI:** update the pinned `gh=` version in `Containerfile` (currently `gh=2.102.1`) to the desired version.
+- **GitHub CLI:** update the pinned `gh=` version in `Containerfile` (currently `gh=2.103.2`) to the desired version.
 
 ### Supporting additional OSes
 - The script currently assumes macOS Keychain for the OpenRouter API key.
@@ -99,7 +99,7 @@ shellcheck pi       # if available — strongly recommended
 - `security find-generic-password` is a macOS-specific tool. Guard it or provide fallbacks when adding cross-platform support.
 - The SSH-agent signing proxy exposes an **unauthenticated** signature oracle: any process that can reach the bind address (host loopback on macOS, the Docker bridge gateway on Linux) can request signatures with the one loaded key. The blast radius is deliberately limited to that key, but keep the bind address as narrow as possible and do not widen it.
 - Docker on macOS can be slow for volume I/O. The `.dockerignore` is intentionally minimal to keep the build context small.
-- Runtime tunables are read from env vars with safe defaults: `PI_CPUS` (2), `PI_MEMORY` (4g), `PI_PIDS_LIMIT` (512), `PI_NOFILE_SOFT`/`PI_NOFILE_HARD` (4096/8192), and `PI_SSH_AGENT_PORT` (ephemeral). Follow this pattern when adding a new tunable: `"${PI_X:-default}"`, documented in the README Configuration section.
+- Runtime tunables are read from env vars with safe defaults: `PI_CPUS` (2), `PI_MEMORY` (4g, also the memory-plus-swap limit), `PI_PIDS_LIMIT` (512), `PI_SHM_SIZE` (64m), `PI_NOFILE_SOFT`/`PI_NOFILE_HARD` (4096/8192), and `PI_SSH_AGENT_PORT` (ephemeral). Follow this pattern when adding a new tunable: `"${PI_X:-default}"`, documented in the README Configuration section.
 - The container user mirrors the host UID/GID via `APP_UID`/`APP_GID` build args (cannot be hard-coded to 1000, since Docker bind mounts preserve numeric ownership). The script refuses to run as root (UID/GID 0) for the same reason — keep that guard if you touch the launch path.
 - When `GH_TOKEN` is available, the generated gitconfig also appends a `[credential "https://github.com"]` block using the `gh` credential helper (with an empty helper line first to reset inherited helpers). Keep this in mind when editing the gitconfig generation: it depends on `GH_TOKEN`, not on the git identity block.
 
