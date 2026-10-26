@@ -227,6 +227,10 @@ if [[ -n "${PI_VSCODE_BRIDGE_URL:-}" ]]; then
       echo "Error: could not determine a container-reachable bind address for the VS Code bridge relay." >&2
       exit 1
     fi
+    if ! command -v socat >/dev/null 2>&1; then
+      echo "Error: socat is required on the host for the Linux VS Code bridge relay." >&2
+      exit 1
+    fi
     socat "TCP-LISTEN:$BRIDGE_RELAY_PORT,bind=$SOCAT_BIND,reuseaddr,fork" \
       "TCP:127.0.0.1:$BRIDGE_HOST_PORT" </dev/null >/dev/null 2>&1 &
     BRIDGE_RELAY_PID=$!
@@ -268,10 +272,10 @@ fi
 # the container's filesystem, and generate a brand-new config file.
 # ------------------------------------------------------------------------
 if command -v git >/dev/null 2>&1; then
-  GIT_USER_NAME=$(git config --global user.name)
-  GIT_USER_EMAIL=$(git config --global user.email)
-  GIT_SIGNING_KEY_PATH=$(git config --global user.signingkey)
-  GIT_ALLOWED_SIGNERS_PATH=$(git config --global gpg.ssh.allowedSignersFile)
+  GIT_USER_NAME=$(git config --global user.name || true)
+  GIT_USER_EMAIL=$(git config --global user.email || true)
+  GIT_SIGNING_KEY_PATH=$(git config --global user.signingkey || true)
+  GIT_ALLOWED_SIGNERS_PATH=$(git config --global gpg.ssh.allowedSignersFile || true)
 
   # Check signing prerequisites up front. An empty GIT_SIGNING_KEY_PATH means
   # signing is unavailable and must stay disabled in the generated config.
@@ -400,7 +404,7 @@ if [[ -f "$HOME/.config/gh/config.yml" ]]; then
 fi
 
 if command -v gh >/dev/null 2>&1; then
-  GH_TOKEN="$(gh auth token)"
+  GH_TOKEN="$(gh auth token || true)"
   if [[ -n "$GH_TOKEN" ]]; then
     export GH_TOKEN
     DOCKER_ARGS+=(-e GH_TOKEN)
