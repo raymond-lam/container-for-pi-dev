@@ -92,6 +92,8 @@ DOCKER_ARGS=(
   --security-opt=no-new-privileges
   --pids-limit="${PI_PIDS_LIMIT:-512}"
   --memory="${PI_MEMORY:-4g}"
+  --memory-swap="${PI_MEMORY:-4g}"
+  --shm-size="${PI_SHM_SIZE:-64m}"
   --cpus="${PI_CPUS:-2}"
   --ulimit "nofile=${PI_NOFILE_SOFT:-4096}:${PI_NOFILE_HARD:-8192}"
   -e OPENROUTER_API_KEY
@@ -225,6 +227,10 @@ if [[ -n "${PI_VSCODE_BRIDGE_URL:-}" ]]; then
       echo "Error: could not determine a container-reachable bind address for the VS Code bridge relay." >&2
       exit 1
     fi
+    if ! command -v socat >/dev/null 2>&1; then
+      echo "Error: socat is required on the host for the Linux VS Code bridge relay." >&2
+      exit 1
+    fi
     socat "TCP-LISTEN:$BRIDGE_RELAY_PORT,bind=$SOCAT_BIND,reuseaddr,fork" \
       "TCP:127.0.0.1:$BRIDGE_HOST_PORT" </dev/null >/dev/null 2>&1 &
     BRIDGE_RELAY_PID=$!
@@ -266,10 +272,10 @@ fi
 # the container's filesystem, and generate a brand-new config file.
 # ------------------------------------------------------------------------
 if command -v git >/dev/null 2>&1; then
-  GIT_USER_NAME=$(git config --global user.name)
-  GIT_USER_EMAIL=$(git config --global user.email)
-  GIT_SIGNING_KEY_PATH=$(git config --global user.signingkey)
-  GIT_ALLOWED_SIGNERS_PATH=$(git config --global gpg.ssh.allowedSignersFile)
+  GIT_USER_NAME=$(git config --global user.name || true)
+  GIT_USER_EMAIL=$(git config --global user.email || true)
+  GIT_SIGNING_KEY_PATH=$(git config --global user.signingkey || true)
+  GIT_ALLOWED_SIGNERS_PATH=$(git config --global gpg.ssh.allowedSignersFile || true)
 
   # Check signing prerequisites up front. An empty GIT_SIGNING_KEY_PATH means
   # signing is unavailable and must stay disabled in the generated config.
@@ -398,7 +404,7 @@ if [[ -f "$HOME/.config/gh/config.yml" ]]; then
 fi
 
 if command -v gh >/dev/null 2>&1; then
-  GH_TOKEN="$(gh auth token)"
+  GH_TOKEN="$(gh auth token || true)"
   if [[ -n "$GH_TOKEN" ]]; then
     export GH_TOKEN
     DOCKER_ARGS+=(-e GH_TOKEN)
@@ -416,6 +422,45 @@ EOF
     fi
   fi
 fi
+
+# ------------------------------------------------------------------------
+# Container awareness
+# ------------------------------------------------------------------------
+# Pi has no built-in notion of running inside a container, so tell it. The
+# notice is a stable literal string appended to the system prompt, which
+# needs no mount or temp file. Pi derives the addendum from argv, so this is
+# also the only path that works identically in TUI, json and rpc modes.
+#
+# Caveat: --append-system-prompt replaces Pi's own discovery of
+# <agent-dir>/APPEND_SYSTEM.md and .pi/APPEND_SYSTEM.md, so the global one is
+# forwarded here. It is mounted from the host and may already carry the user's
+# own instructions.
+README_APPEND=""
+if [[ -f "${HOME}/.pi/agent/APPEND_SYSTEM.md" ]]; then
+  README_APPEND="$(<"${HOME}/.pi/agent/APPEND_SYSTEM.md")"
+fi
+
+PI_ARGS=(
+  --append-system-prompt "$(
+    printf '%s\n\n' "$README_APPEND"
+    cat <<EOF
+<container>
+You are running inside a Docker container, not directly on the user's host.
+- Ephemeral: the container is destroyed when this session ends. Only the
+  workspace, $HOME/.pi/agent and a generated git config are mounted; anything
+  written elsewhere is lost. Never assume another process or session can see it.
+- Isolation: host paths outside those mounts do not exist here, and the host's
+  private keys are absent. Commits are signed through a forwarded agent and
+  GitHub auth uses GH_TOKEN.
+- Unprivileged: no sudo, no package manager installs, no nested Docker/containers.
+- Resource caps: ${PI_CPUS:-2} CPUs, ${PI_MEMORY:-4g} RAM, ${PI_PIDS_LIMIT:-512} PIDs.
+  Long or highly parallel builds can be killed.
+- Network egress is available; host loopback services are not reachable unless
+  the wrapper forwarded them explicitly.
+</container>
+EOF
+  )"
+)
 
 # ------------------------------------------------------------------------
 # TTY / interactive detection
@@ -493,4 +538,4 @@ TEARDOWN_CONTAINERS+=("container:$CONTAINER_NAME")
 # running and will see EOF whenever this process goes away.
 trap - EXIT INT TERM HUP
 
-exec docker "${DOCKER_ARGS[@]}" "$IMAGE" pi "$@"
+exec docker "${DOCKER_ARGS[@]}" "$IMAGE" pi "${PI_ARGS[@]}" "$@"
