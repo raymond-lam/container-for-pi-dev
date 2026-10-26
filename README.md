@@ -56,6 +56,12 @@ The first invocation builds the image; subsequent runs are instant thanks to Doc
 
 The wrapper intentionally **does not** mount your entire `~/.ssh` or `~/.gitconfig` verbatim, avoiding host-specific absolute paths and unnecessary credential exposure.
 
+### Container awareness
+
+Pi has no built-in notion of running inside a container, so the wrapper appends a short container notice to Pi's system prompt via a repeatable `--append-system-prompt` argument. It tells the agent that the environment is ephemeral and unprivileged, which host paths exist, how git signing and GitHub auth work, and what resource caps apply.
+
+Caveat: Pi treats a CLI `--append-system-prompt` as a replacement for its own discovery of `<agent-dir>/APPEND_SYSTEM.md` and `.pi/APPEND_SYSTEM.md`. The wrapper therefore forwards a global `~/.pi/agent/APPEND_SYSTEM.md` itself (concatenated ahead of the notice). A project-level `.pi/APPEND_SYSTEM.md` is still not picked up when running through the wrapper.
+
 ---
 
 ## Usage

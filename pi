@@ -418,6 +418,45 @@ EOF
 fi
 
 # ------------------------------------------------------------------------
+# Container awareness
+# ------------------------------------------------------------------------
+# Pi has no built-in notion of running inside a container, so tell it. The
+# notice is a stable literal string appended to the system prompt, which
+# needs no mount or temp file. Pi derives the addendum from argv, so this is
+# also the only path that works identically in TUI, json and rpc modes.
+#
+# Caveat: --append-system-prompt replaces Pi's own discovery of
+# <agent-dir>/APPEND_SYSTEM.md and .pi/APPEND_SYSTEM.md, so the global one is
+# forwarded here. It is mounted from the host and may already carry the user's
+# own instructions.
+README_APPEND=""
+if [[ -f "${HOME}/.pi/agent/APPEND_SYSTEM.md" ]]; then
+  README_APPEND="$(<"${HOME}/.pi/agent/APPEND_SYSTEM.md")"
+fi
+
+PI_ARGS=(
+  --append-system-prompt "$(
+    printf '%s\n\n' "$README_APPEND"
+    cat <<EOF
+<container>
+You are running inside a Docker container, not directly on the user's host.
+- Ephemeral: the container is destroyed when this session ends. Only the
+  workspace, $HOME/.pi/agent and a generated git config are mounted; anything
+  written elsewhere is lost. Never assume another process or session can see it.
+- Isolation: host paths outside those mounts do not exist here, and the host's
+  private keys are absent. Commits are signed through a forwarded agent and
+  GitHub auth uses GH_TOKEN.
+- Unprivileged: no sudo, no package manager installs, no nested Docker/containers.
+- Resource caps: ${PI_CPUS:-2} CPUs, ${PI_MEMORY:-4g} RAM, ${PI_PIDS_LIMIT:-512} PIDs.
+  Long or highly parallel builds can be killed.
+- Network egress is available; host loopback services are not reachable unless
+  the wrapper forwarded them explicitly.
+</container>
+EOF
+  )"
+)
+
+# ------------------------------------------------------------------------
 # TTY / interactive detection
 # ------------------------------------------------------------------------
 # Attach stdin when it looks like a real stream so pi can read prompts.
@@ -493,4 +532,4 @@ TEARDOWN_CONTAINERS+=("container:$CONTAINER_NAME")
 # running and will see EOF whenever this process goes away.
 trap - EXIT INT TERM HUP
 
-exec docker "${DOCKER_ARGS[@]}" "$IMAGE" pi "$@"
+exec docker "${DOCKER_ARGS[@]}" "$IMAGE" pi "${PI_ARGS[@]}" "$@"
