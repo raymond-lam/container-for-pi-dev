@@ -79,7 +79,7 @@ shellcheck pi       # if available — strongly recommended
 
 ### Updating dependencies
 - **Pi agent version:** bump the version in `Containerfile` (`npm install -g @earendil-works/pi-coding-agent@X.Y.Z`).
-- **System packages:** pin Debian versions in the `apt-get install` line to keep builds reproducible.
+- **System packages:** pin Debian versions in the `apt-get install` line to keep builds reproducible. This includes `pre-commit`, which pulls in Python; bump its pin when you need a newer pre-commit.
 - **GitHub CLI:** update the pinned `gh=` version in `Containerfile` to the desired version.
 
 ### Supporting additional OSes

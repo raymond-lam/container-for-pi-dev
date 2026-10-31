@@ -81,6 +81,8 @@ pi --model claude-3.5-sonnet
 
 The `pi` script detects TTY and stdin state automatically, so interactive prompts, colours, and progress bars work as expected.
 
+The image includes [pre-commit](https://pre-commit.com), so repositories that already use it work inside the sandbox without installing it on the host. If a repository's hook was installed by pre-commit on the host, re-run `pre-commit install` inside the container: the generated hook embeds the absolute path of the Python interpreter that created it. Hook environments are cached under `~/.cache/pre-commit`, which is not mounted, so they are recreated per container session.
+
 ---
 
 ## Configuration
@@ -148,7 +150,7 @@ export OPENROUTER_API_KEY=...
 | File | Purpose |
 |---|---|
 | `pi` | Bash wrapper — the main entry point, also bridge-aware for `pi0.pi-vscode` |
-| `Containerfile` | OCI image definition based on Node.js 24; installs bash, ca-certificates, curl, git, gnupg, openssh-client, ripgrep, socat, tini, `gh`, and Pi. Package versions are pinned here |
+| `Containerfile` | OCI image definition based on Node.js 24; installs bash, ca-certificates, curl, git, gnupg, openssh-client, pre-commit (with Python), ripgrep, socat, tini, `gh`, and Pi. Package versions are pinned here |
 | `entrypoint` | Container entrypoint; optionally bridges the host SSH agent proxy |
 | `.dockerignore` | Excludes `.git`, env files, common credential files, and editor debris from the build context |
 | `LICENSE` | Apache 2.0 license |

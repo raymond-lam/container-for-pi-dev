@@ -31,6 +31,7 @@ FROM node:24-bookworm-slim
 #   • git         – version control
 #   • gnupg       – sometimes required by apt keyring operations
 #   • openssh-client – ssh-keygen for SSH commit signing
+#   • pre-commit  – runs repositories' pre-commit hooks (pulls in Python)
 #   • ripgrep     – fast search, used by pi
 #   • socat       – bridges the host SSH agent TCP proxy to a Unix socket
 #   • tini        – minimal init that reaps zombies and forwards signals
@@ -42,6 +43,7 @@ RUN apt-get update \
     git=1:2.39.5-0+deb12u3 \
     gnupg=2.2.40-1.1+deb12u2 \
     openssh-client=1:9.2p1-2+deb12u10 \
+    pre-commit=3.0.4-1 \
     ripgrep=13.0.0-4+b2 \
     socat=1.7.4.4-2 \
     tini=0.19.0-1+b3 \
