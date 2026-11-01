@@ -45,7 +45,7 @@ The first invocation builds the image; subsequent runs are instant thanks to Doc
 | Host resource | Container path | Notes |
 |---|---|---|
 | Current working directory | Same as host | Read/write — your project files |
-| `~/.pi/agent` | Same as host | Persistent agent state across runs |
+| `~/.pi` (including `~/.pi/agent`) | Same as host | Read/write, persistent. Includes `agent/auth.json` (provider credentials), settings, extensions, sessions, and caches; all are visible and writable inside the container. Mounting the parent also lets extensions persist sibling files such as `~/.pi/caveman-think.json` |
 | OpenRouter API key | `OPENROUTER_API_KEY` env var | From the environment, or fetched from macOS Keychain |
 | Git `user.name` / `user.email` | `/home/pi/.gitconfig` | Rewritten with container-native paths. The generated config also explicitly sets `commit.gpgsign`/`tag.gpgsign` (`false` when signing is unavailable) and, when `GH_TOKEN` is injected, a `gh` credential helper for GitHub HTTPS auth |
 | Git SSH signing public key | `/home/pi/.ssh/git-signing.pub` | Only the configured public key file is mounted; a `user.signingkey` that points at a private key is refused rather than mounted. The key pair is verified by fingerprint before signing is enabled |
@@ -54,7 +54,7 @@ The first invocation builds the image; subsequent runs are instant thanks to Doc
 | `gh` config (`~/.config/gh/config.yml`) | `/home/pi/.config/gh/config.yml` | Read-only settings and aliases. `hosts.yml` is deliberately not mounted because it can contain plaintext OAuth tokens |
 | `gh` OAuth token | `GH_TOKEN` env var | Retrieved via `gh auth token` and injected so `gh` works without a container login; git uses it for GitHub HTTPS auth via the `gh` credential helper |
 
-The wrapper intentionally **does not** mount your entire `~/.ssh` or `~/.gitconfig` verbatim, avoiding host-specific absolute paths and unnecessary credential exposure.
+The wrapper does not mount `~/.ssh` or `~/.gitconfig` verbatim, but it does mount all of `~/.pi` read-write. Container processes can read and modify Pi's credentials and state there; only use this sandbox with trusted code and extensions.
 
 ---
 
@@ -161,6 +161,7 @@ export OPENROUTER_API_KEY=...
 ## Security notes
 
 - The container runs as an unprivileged user (`pi`). The wrapper passes your host UID/GID as build args so bind-mounted files keep their ownership and stay writable on native Linux. UID/GID 0 is rejected. The container also drops all capabilities, enables `no-new-privileges`, and applies CPU, memory, PID, shared-memory, and file-descriptor limits. The memory-plus-swap limit is pinned to `PI_MEMORY`; if the container reaches it, the kernel may OOM-kill a process rather than letting it consume extra swap. This is still a local sandbox, not a hardened multi-tenant runtime.
+- The entire `~/.pi` directory is mounted read-write, including `agent/auth.json` provider credentials, settings, and installed extensions. Processes in the container can read or modify this state, and changes persist on the host. Do not run untrusted code or extensions with this mount.
 - For SSH commit signing, the wrapper starts a **fresh, isolated `ssh-agent` on the host** and loads only your git signing key into it — never your personal agent or other identities. It locates the private key as the sibling of the `.pub` file, then verifies the key pair by fingerprint, before showing the container a signature oracle via a short-lived `socat` TCP proxy. The private key itself is never mounted into the container, so a compromised agent can only request signatures with that one key. Independently, the configured `user.signingkey` *path* is the file that gets mounted; if it points at a private key, signing is refused rather than that file being mounted into the sandbox. Unix sockets cannot cross the Docker Desktop/Podman VM boundary, which is why the wrapper proxies the ephemeral agent socket. On Linux the container uses the default Docker network plus `host.docker.internal` (via `host-gateway`) rather than host networking, and the proxy binds to the Docker bridge gateway. On macOS it binds to host loopback, which Docker Desktop forwards via `host.docker.internal`; it is never bound to every interface. If the Docker bridge gateway cannot be determined on Linux, signing is disabled rather than exposing the proxy broadly. If the key pair cannot be confirmed or the agent cannot be started, signing is disabled with a warning rather than failing at commit time.
 - The SSH-agent signing proxy is an unauthenticated signature oracle bound to host loopback (macOS) or the Docker bridge gateway (Linux): anything that can reach that address can request signatures with the one loaded signing key. This is a deliberate trade-off — the blast radius is limited to a single, dedicated key — but it is why the proxy is never bound to all interfaces.
 - The `.dockerignore` keeps `.git`, `.env` files, common credential files, and editor debris out of the Docker build context. This reduces accidental disclosure to the Docker daemon/builder; it is not a substitute for keeping secrets outside the repository.
