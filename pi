@@ -134,13 +134,12 @@ fi
 # ------------------------------------------------------------------------
 # Install the trap before starting any background proxies.
 # ------------------------------------------------------------------------
-# The generated git config is bind-mounted into the container, so it must live
-# where Docker can see it. Docker Desktop does not share $TMPDIR
-# (/var/folders/... on macOS); $HOME is shared on both platforms, so the temp
-# dir lives under ~/.pi. mkdir -p is needed because mktemp -d only creates the
-# last path component.
-mkdir -p "${HOME}/.pi/tmp"
-GIT_CONFIG_DIR=$(mktemp -d "${HOME}/.pi/tmp/pi-gitconfig.XXXXXXXX")
+# Stage the generated git config in the system temporary directory. Docker
+# Desktop shares $TMPDIR (/var/folders/...) and /tmp by default, as does a Linux
+# host, so the generated file can be bind-mounted directly. Only that one file
+# is mounted, not the staging directory, which keeps the cleanup FIFO out of the
+# container.
+STAGING_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pi.XXXXXXXX")
 BRIDGE_RELAY_PID=""
 SIGNING_AGENT_DIR=""
 SIGNING_AGENT_SOCKET=""
@@ -151,7 +150,7 @@ SSH_AGENT_PROXY_PID=""
 # wherever a background process starts or a temp dir is created, so no call site
 # has to know the full list. See teardown below for the argument convention.
 TEARDOWN_PIDS=()
-TEARDOWN_DIRS=("$GIT_CONFIG_DIR")
+TEARDOWN_DIRS=("$STAGING_DIR")
 # Containers created by this wrapper, torn down with `docker rm -f`. Populated
 # only when the container actually launches (see the Launch section), so the
 # EXIT trap cannot touch a container that was never started.
@@ -350,20 +349,20 @@ if command -v git >/dev/null 2>&1; then
 
   # Use git itself so values containing newlines or special characters are
   # escaped instead of being interpolated into the config file.
-  : > "$GIT_CONFIG_DIR/gitconfig"
+  : > "$STAGING_DIR/gitconfig"
   if [[ -n "$GIT_USER_NAME" ]]; then
-    git config --file "$GIT_CONFIG_DIR/gitconfig" user.name "$GIT_USER_NAME"
+    git config --file "$STAGING_DIR/gitconfig" user.name "$GIT_USER_NAME"
   fi
   if [[ -n "$GIT_USER_EMAIL" ]]; then
-    git config --file "$GIT_CONFIG_DIR/gitconfig" user.email "$GIT_USER_EMAIL"
+    git config --file "$STAGING_DIR/gitconfig" user.email "$GIT_USER_EMAIL"
   fi
   # The signingkey line below belongs to [user]; ensure the section exists even
   # when the host has no name/email configured.
-  if [[ -n "$GIT_SIGNING_KEY_PATH" ]] && ! grep -q '^\[user\]' "$GIT_CONFIG_DIR/gitconfig"; then
-    printf '[user]\n' >> "$GIT_CONFIG_DIR/gitconfig"
+  if [[ -n "$GIT_SIGNING_KEY_PATH" ]] && ! grep -q '^\[user\]' "$STAGING_DIR/gitconfig"; then
+    printf '[user]\n' >> "$STAGING_DIR/gitconfig"
   fi
   if [[ -n "$GIT_SIGNING_KEY_PATH" ]]; then
-    cat >> "$GIT_CONFIG_DIR/gitconfig" <<EOF
+    cat >> "$STAGING_DIR/gitconfig" <<EOF
   signingkey = /home/pi/.ssh/git-signing.pub
 [gpg]
   format = ssh
@@ -378,7 +377,7 @@ EOF
       DOCKER_ARGS+=(-v "$GIT_ALLOWED_SIGNERS_PATH:/home/pi/.config/git/allowed_signers:ro")
     fi
   else
-    cat >> "$GIT_CONFIG_DIR/gitconfig" <<EOF
+    cat >> "$STAGING_DIR/gitconfig" <<EOF
 [commit]
   gpgsign = false
 [tag]
@@ -389,7 +388,7 @@ EOF
   # The generated config lives in a temporary directory and is deleted on
   # exit, so mounting it writable is safe. It lets tools such as
   # `gh auth setup-git` update the in-container config without failing.
-  DOCKER_ARGS+=(-v "$GIT_CONFIG_DIR/gitconfig:/home/pi/.gitconfig")
+  DOCKER_ARGS+=(-v "$STAGING_DIR/gitconfig:/home/pi/.gitconfig")
 fi
 
 # ------------------------------------------------------------------------
@@ -417,8 +416,8 @@ if command -v gh >/dev/null 2>&1; then
     # gh credential helper. This makes `git push`/`fetch` work out of the box
     # and avoids requiring `gh auth setup-git` inside the container. The empty
     # helper line resets any inherited helpers before adding gh's.
-    if [[ -f "$GIT_CONFIG_DIR/gitconfig" ]]; then
-      cat >> "$GIT_CONFIG_DIR/gitconfig" <<'EOF'
+    if [[ -f "$STAGING_DIR/gitconfig" ]]; then
+      cat >> "$STAGING_DIR/gitconfig" <<'EOF'
 [credential "https://github.com"]
   helper =
   helper = !gh auth git-credential
@@ -500,7 +499,7 @@ fi
 # an immediate EOF and deletes the git config before docker can mount it (this
 # is what macOS /bin/bash 3.2 does). A FIFO opened via `exec 9> path` is an
 # ordinary redirection, survives exec, and needs no polling.
-CLEANUP_FIFO="$GIT_CONFIG_DIR/cleanup.fifo"
+CLEANUP_FIFO="$STAGING_DIR/cleanup.fifo"
 rm -f "$CLEANUP_FIFO"
 mkfifo -m 600 "$CLEANUP_FIFO"
 # Start the cleaner from a subshell that exits immediately. The subshell forks
