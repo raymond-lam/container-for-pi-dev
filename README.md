@@ -45,7 +45,7 @@ The first invocation builds the image; subsequent runs are instant thanks to Doc
 | Host resource | Container path | Notes |
 |---|---|---|
 | Current working directory | Same as host | Read/write — your project files |
-| `~/.pi` (including `~/.pi/agent`) | Same as host | Read/write, persistent. Includes `agent/auth.json` (provider credentials), settings, extensions, sessions, and caches; all are visible and writable inside the container. Mounting the parent also lets extensions persist sibling files such as `~/.pi/caveman-think.json` |
+| `~/.pi` (including `~/.pi/agent`) | `/home/pi/.pi` | Read/write, persistent. Includes `agent/auth.json` (provider credentials), settings, extensions, sessions, and caches; all are visible and writable inside the container. Mounting the parent also lets extensions persist sibling files alongside `agent` |
 | OpenRouter API key | `OPENROUTER_API_KEY` env var | From the environment, or fetched from macOS Keychain |
 | Git `user.name` / `user.email` | `/home/pi/.gitconfig` | Rewritten with container-native paths. The generated config also explicitly sets `commit.gpgsign`/`tag.gpgsign` (`false` when signing is unavailable) and, when `GH_TOKEN` is injected, a `gh` credential helper for GitHub HTTPS auth |
 | Git SSH signing public key | `/home/pi/.ssh/git-signing.pub` | Only the configured public key file is mounted; a `user.signingkey` that points at a private key is refused rather than mounted. The key pair is verified by fingerprint before signing is enabled |
@@ -123,7 +123,7 @@ When launched by the extension, the wrapper additionally handles the bridge and 
 - **Same-path project mount** — the project is mounted at its host absolute path, so file paths returned by the VS Code bridge resolve inside the container.
 - **Extension mount** — the installed `pi0.pi-vscode` extension directory is discovered under the common VS Code extension roots and mounted read-only at the same host path.
 - **Bridge URL rewrite** — `PI_VSCODE_BRIDGE_URL` is rewritten to the wrapper's shared host alias so the container can reach the extension's localhost bridge. The bridge token and terminal ID are forwarded too.
-- **Session continuity** — `~/.pi/agent` is mounted at its host path and advertised via `PI_CODING_AGENT_DIR`, so the extension can track and restore terminal sessions across window reloads.
+- **Session continuity** — the host's `~/.pi/agent` is mounted at `/home/pi/.pi/agent` and advertised via `PI_CODING_AGENT_DIR`, so the extension can track and restore terminal sessions across window reloads.
 - **Clean stdio** — build output goes to stderr, keeping `pi --mode rpc` stdout parseable for the `@pi` chat participant.
 
 > **Requirements and limits**

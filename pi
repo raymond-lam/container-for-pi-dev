@@ -20,7 +20,7 @@
 # make the experience seamless without over-sharing credentials:
 #
 #   • The current working directory → same absolute path (read/write)
-#   • Pi's agent state directory    → same absolute path (read/write)
+#   • Pi's agent state directory    → $CONTAINER_HOME/.pi (read/write)
 #   • Your OpenRouter API key       → injected as an environment variable
 #   • Git identity & SSH signing    → rewritten paths + dedicated signing agent
 #   • GitHub CLI (gh) auth          → read-only mount of ~/.config/gh
@@ -44,6 +44,10 @@ IMAGE=localhost/pi-sandbox
 PLATFORM="$(uname -s)"
 APP_UID="$(id -u)"
 APP_GID="$(id -g)"
+# The container user is always `pi` with this home (see Containerfile). Host
+# home directories can be anywhere (e.g. /Users/you), so container paths must
+# use this value rather than $HOME.
+CONTAINER_HOME=/home/pi
 
 if [[ "$APP_UID" -eq 0 || "$APP_GID" -eq 0 ]]; then
   echo "Error: refusing to run as root; the container user mirrors the host UID/GID." >&2
@@ -99,8 +103,8 @@ DOCKER_ARGS=(
   -e OPENROUTER_API_KEY
   -v "$PWD:$PWD"
   -w "$PWD"
-  -v "${HOME}/.pi:${HOME}/.pi"
-  -e "PI_CODING_AGENT_DIR=${HOME}/.pi/agent"
+  -v "${HOME}/.pi:${CONTAINER_HOME}/.pi"
+  -e "PI_CODING_AGENT_DIR=${CONTAINER_HOME}/.pi/agent"
 )
 
 # Use host.docker.internal on both platforms instead of host networking.
@@ -447,7 +451,7 @@ PI_ARGS=(
 <container>
 You are running inside a Docker container, not directly on the user's host.
 - Ephemeral: the container is destroyed when this session ends. Only the
-  workspace, $HOME/.pi and a generated git config are mounted; anything
+  workspace, $CONTAINER_HOME/.pi and a generated git config are mounted; anything
   written elsewhere is lost. Never assume another process or session can see it.
 - Isolation: host paths outside those mounts do not exist here, and the host's
   private keys are absent. Commits are still signed through the forwarded
