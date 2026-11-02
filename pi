@@ -464,7 +464,7 @@ You are running inside a Docker container, not directly on the user's host.
 - Isolation: host paths outside those mounts do not exist here, and the host's
   private keys are absent. Commits are still signed through the forwarded
   agent, but GitHub SSH authentication is unavailable from inside the
-  container: pushes and fetches must use the `gh` credential helper (configured
+  container: pushes and fetches must use the \`gh\` credential helper (configured
   in the generated gitconfig when GH_TOKEN is set) instead of SSH credentials.
 - Unprivileged: no sudo, no package manager installs, no nested Docker/containers.
 - Resource caps: ${PI_CPUS:-2} CPUs, ${PI_MEMORY:-4g} RAM, ${PI_PIDS_LIMIT:-512} PIDs.
