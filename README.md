@@ -79,7 +79,7 @@ pi --help
 pi --model claude-3.5-sonnet
 ```
 
-The `pi` script detects TTY and stdin state automatically, so interactive prompts, colours, and progress bars work as expected.
+The `pi` script detects TTY and stdin state automatically, so interactive prompts, colours, and progress bars work as expected. After the Docker image build, if `caffeinate` is available on `PATH`, the wrapper runs `caffeinate -i` in the background while active to prevent idle sleep. If it is unavailable, the wrapper continues without a sleep assertion. This does not prevent sleep when you close the lid.
 
 The image includes [pre-commit](https://pre-commit.com), so repositories that already use it work inside the sandbox without installing it on the host. If a repository's hook was installed by pre-commit on the host, re-run `pre-commit install` inside the container: the generated hook embeds the absolute path of the Python interpreter that created it. Hook environments are cached under `~/.cache/pre-commit`, which is not mounted, so they are recreated per container session.
 

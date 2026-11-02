@@ -208,6 +208,15 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+# Prevent idle sleep when the host provides caffeinate. Start it after the
+# cleanup trap is installed and register it before the cleaner snapshots PIDs.
+# `caffeinate -i` does not prevent sleep caused by closing the lid.
+if command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -i </dev/null >/dev/null 2>&1 &
+  CAFFEINATE_PID=$!
+  TEARDOWN_PIDS+=("$CAFFEINATE_PID")
+fi
+
 # ------------------------------------------------------------------------
 # VS Code bridge
 # ------------------------------------------------------------------------
