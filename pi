@@ -22,6 +22,7 @@
 #   • The current working directory → same absolute path (read/write)
 #   • Pi's agent state directory    → $CONTAINER_HOME/.pi (read/write)
 #   • Your OpenRouter API key       → injected as an environment variable
+#   • OpenRouter management key     → optional env var for pi-openrouter
 #   • Git identity & SSH signing    → rewritten paths + dedicated signing agent
 #   • GitHub CLI (gh) auth          → read-only mount of ~/.config/gh
 #   • VS Code bridge                → host.docker.internal + extension mount
@@ -31,7 +32,8 @@
 #
 # Requirements
 #   • Docker
-#   • macOS Keychain with an item for openrouter.ai (used for the API key)
+#   • macOS Keychain with an item for openrouter.ai (used for the API key,
+#     and optionally the management key)
 #   • git (optional — if missing, git identity and signing mounts are skipped)
 #
 # Usage
@@ -70,10 +72,12 @@ docker build \
   -f Containerfile -t "$IMAGE" "$SCRIPT_DIR" >&2
 
 # ------------------------------------------------------------------------
-# API key
+# API key and management key
 # ------------------------------------------------------------------------
-# Prefer OPENROUTER_API_KEY from the environment (Linux/Podman/CI). Otherwise
-# fall back to the macOS Keychain.
+# Prefer OPENROUTER_API_KEY / OPENROUTER_MANAGEMENT_KEY from the environment
+# (Linux/Podman/CI). Otherwise fall back to the macOS Keychain. The API key is
+# required; the management key is optional (pi-openrouter prefers it for
+# usage/analytics, model sync, and API key management but works without one).
 # ------------------------------------------------------------------------
 mkdir -p "${HOME}/.pi/agent"
 if [[ -z "${OPENROUTER_API_KEY:-}" ]] && command -v security >/dev/null 2>&1; then
@@ -84,6 +88,15 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   exit 1
 fi
 export OPENROUTER_API_KEY
+
+# The management key is optional: missing it is not an error, so there is no
+# guard on this optional read.
+if [[ -z "${OPENROUTER_MANAGEMENT_KEY:-}" ]] && command -v security >/dev/null 2>&1; then
+  OPENROUTER_MANAGEMENT_KEY="$(security find-generic-password -s openrouter.ai -a management-key -w 2>/dev/null || true)"
+fi
+if [[ -n "${OPENROUTER_MANAGEMENT_KEY:-}" ]]; then
+  export OPENROUTER_MANAGEMENT_KEY
+fi
 
 # Name the container (random number suffix) so cleanup can stop and remove
 # it if it is still around when teardown runs.
@@ -106,6 +119,12 @@ DOCKER_ARGS=(
   -v "${HOME}/.pi:${CONTAINER_HOME}/.pi"
   -e "PI_CODING_AGENT_DIR=${CONTAINER_HOME}/.pi/agent"
 )
+
+# Forward the optional OpenRouter management key only when one was found, so
+# the container never sees an empty value masquerading as a configured key.
+if [[ -n "${OPENROUTER_MANAGEMENT_KEY:-}" ]]; then
+  DOCKER_ARGS+=(-e OPENROUTER_MANAGEMENT_KEY)
+fi
 
 # Use host.docker.internal on both platforms instead of host networking.
 # On Linux, host-gateway resolves it to the Docker bridge gateway. Host
