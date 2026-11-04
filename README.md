@@ -13,6 +13,7 @@ The same wrapper is bridge-aware and can also be used with the [Pi Coding Agent 
 - **Docker**
 - **socat** on the host (`brew install socat` or `apt install socat`) for SSH commit signing on all platforms, and for the VS Code bridge relay on Linux
 - **OpenRouter API key** — set `OPENROUTER_API_KEY`, or store it in the macOS Keychain
+- **OpenRouter management key** (optional, for the `pi-openrouter` extension) — set `OPENROUTER_MANAGEMENT_KEY`, or store it in the macOS Keychain
 - **Linux or macOS**
 - `git` (optional — used to forward your Git identity and SSH signing configuration)
 
@@ -23,7 +24,7 @@ The same wrapper is bridge-aware and can also be used with the [Pi Coding Agent 
 ## Quick start
 
 1. Clone this repository.
-2. Provide an OpenRouter API key: either `export OPENROUTER_API_KEY=...`, or on macOS store it in Keychain with service `openrouter.ai` and account `api-key`.
+2. Provide an OpenRouter API key: either `export OPENROUTER_API_KEY=...`, or on macOS store it in Keychain with service `openrouter.ai` and account `api-key`. Optionally provide a management key the same way (environment variable `OPENROUTER_MANAGEMENT_KEY`, or Keychain account `management-key`) — used by the `pi-openrouter` extension for usage/analytics, model sync, and API key management. See [API key setup](#api-key-setup).
 3. Symlink the wrapper into a directory on your `PATH` (e.g. `~/bin`) so you can invoke it from anywhere:
 
    ```bash
@@ -46,7 +47,8 @@ The first invocation builds the image; subsequent runs are instant thanks to Doc
 |---|---|---|
 | Current working directory | Same as host | Read/write — your project files |
 | `~/.pi` (including `~/.pi/agent`) | `/home/pi/.pi` | Read/write, persistent. Includes `agent/auth.json` (provider credentials), settings, extensions, sessions, and caches; all are visible and writable inside the container. Mounting the parent also lets extensions persist sibling files alongside `agent` |
-| OpenRouter API key | `OPENROUTER_API_KEY` env var | From the environment, or fetched from macOS Keychain |
+| OpenRouter API key | `OPENROUTER_API_KEY` env var | Required. From the environment, or fetched from macOS Keychain |
+| OpenRouter management key | `OPENROUTER_MANAGEMENT_KEY` env var | Optional. Used by `pi-openrouter` for usage/analytics, model sync, and API key management. From the environment, or fetched from macOS Keychain; not forwarded when absent |
 | Git `user.name` / `user.email` | `/home/pi/.gitconfig` | Rewritten with container-native paths. The generated config also explicitly sets `commit.gpgsign`/`tag.gpgsign` (`false` when signing is unavailable) and, when `GH_TOKEN` is injected, a `gh` credential helper for GitHub HTTPS auth |
 | Git SSH signing public key | `/home/pi/.ssh/git-signing.pub` | Only the configured public key file is mounted; a `user.signingkey` that points at a private key is refused rather than mounted. The key pair is verified by fingerprint before signing is enabled |
 | Dedicated SSH signing agent | proxy → ephemeral agent socket | A fresh `ssh-agent` holding only the git signing key is started on the host and proxied via a short-lived `socat` proxy; your personal SSH agent and all private keys stay on the host and are never passed to the container |
@@ -137,10 +139,16 @@ When launched by the extension, the wrapper additionally handles the bridge and 
 
 ## API key setup
 
-The wrapper uses `OPENROUTER_API_KEY` when it is set, and otherwise reads it from the macOS Keychain via `security`. On Linux (or in CI), export it or load it from your secret manager:
+The wrapper uses `OPENROUTER_API_KEY` when it is set, and otherwise reads it from the macOS Keychain via `security` (service `openrouter.ai`, account `api-key`). This key is **required**. On Linux (or in CI), export it or load it from your secret manager:
 
 ```bash
 export OPENROUTER_API_KEY=...
+```
+
+An OpenRouter **management key** is optional. The `pi-openrouter` extension prefers it for usage/analytics, model sync, and API key management, but works without one. It is resolved the same way: `OPENROUTER_MANAGEMENT_KEY` from the environment first, otherwise the macOS Keychain (service `openrouter.ai`, account `management-key`). When neither is set, the key is simply not forwarded to the container:
+
+```bash
+export OPENROUTER_MANAGEMENT_KEY=...
 ```
 
 ---
