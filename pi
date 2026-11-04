@@ -536,6 +536,9 @@ mkfifo -m 600 "$CLEANUP_FIFO"
 # docker after the exec, where docker's runtime could reap it and where it would
 # share the container process tree it is supposed to outlive.
 (
+  # The single-quoted body is deliberate: it is expanded by the cleaner, not by
+  # this shell, so nothing may expand here.
+  # shellcheck disable=SC2016
   "$BASH" -c '
     # Open the FIFO read end on fd 3. Opening a FIFO for reading blocks until a
     # writer opens it, which is the `exec 9>` below, so the two sides cannot

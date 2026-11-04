@@ -195,9 +195,26 @@ export OPENROUTER_MANAGEMENT_KEY=...
 | `pi` | Bash wrapper — the main entry point, also bridge-aware for `pi0.pi-vscode` |
 | `Containerfile` | OCI image definition based on Node.js 24; installs bash, ca-certificates, curl, git, gnupg, openssh-client, pre-commit (with Python), ripgrep, socat, tini, `gh`, and Pi. Package versions are pinned here |
 | `entrypoint` | Container entrypoint; optionally bridges the host SSH agent proxy |
+| `.github/workflows/ci.yml` | Builds and smoke-tests the image on Linux x64, native Linux ARM64, and Intel macOS (Colima) |
+| `.github/renovate.json` | Renovate config that keeps the base image, Debian package pins, `gh`, and Pi versions current |
 | `.dockerignore` | Excludes `.git`, env files, common credential files, and editor debris from the build context |
 | `LICENSE` | Apache 2.0 license |
 | `NOTICE` | Attribution notice (see License) |
+
+---
+
+## CI coverage
+
+On every pull request and push to `main`, CI builds and smoke-tests the image on
+`ubuntu-latest` (x64), `ubuntu-24.04-arm` (native ARM64), and `macos-15-intel`
+(using Colima, not Docker Desktop). Each host tests the default image, installed
+tools, unprivileged user, SSH directory permissions, and entrypoint passthrough.
+These checks do not exercise the host wrapper or make provider API calls.
+
+Native Linux ARM64 image coverage is not macOS ARM Docker coverage. Apple
+Silicon macOS hosts, including M3 hardware, and Docker Desktop integration
+remain untested; the hosted Apple Silicon runners lack the nested virtualization
+needed by the Colima setup action.
 
 ---
 

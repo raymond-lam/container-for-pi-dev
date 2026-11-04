@@ -25,6 +25,8 @@ The wrapper (`pi`) builds a container image, injects sensitive credentials (API 
 | `pi` | Bash | The wrapper script — builds image, sets up mounts/env, launches container. Primary user-facing interface, and bridge-aware for the `pi0.pi-vscode` extension (same-path mounts, bridge URL + token forwarding, clean stdout for RPC mode). |
 | `Containerfile` | Dockerfile | OCI image definition based on `node:24-bookworm-slim` (see README Files table for the full package list). Must remain secret-free. `socat` (SSH-agent bridging) and `tini` (init/zombie reaping) are load-bearing: the SSH signing proxy and signal handling depend on them. |
 | `entrypoint` | Shell | Container entrypoint; optionally bridges the host SSH agent proxy. |
+| `.github/workflows/ci.yml` | YAML | Builds and smoke-tests the image on Linux x64, native Linux ARM64, and Intel macOS (Colima). Also runs `bash -n` and `shellcheck` on `pi` and `entrypoint`. This is the gate that makes automated dependency PRs safe. |
+| `.github/renovate.json` | JSON | Renovate config covering all four `Containerfile` pins: base image and Debian `deb` pins through the dockerfile manager, `gh` and Pi through regex custom managers. Grouped into two PRs. |
 | `.dockerignore` | — | Excludes `.git`, env files, credentials, and editor debris from the build context. |
 | `README.md` | Markdown | User-facing documentation, including the full Files table. Keep in sync with script behaviour. |
 | `LICENSE` | — | Apache 2.0 |
@@ -68,6 +70,11 @@ bash -n pi          # syntax check
 shellcheck pi       # if available — strongly recommended
 ```
 
+### CI coverage and limitations
+
+- Image integration runs on `ubuntu-latest`, `ubuntu-24.04-arm` and `macos-15-intel`. The Intel macOS setup action uses Colima and installs/links Docker buildx. CI does not exercise the host wrapper.
+- Linux ARM64 image coverage is not ARM macOS coverage. M3 hardware, Docker Desktop integration and real Docker on Apple Silicon macOS remain untested; hosted Apple Silicon lacks the nested virtualization needed by the setup action.
+
 ## Common Tasks
 
 ### Adding a new forwarded resource
@@ -108,7 +115,7 @@ shellcheck pi       # if available — strongly recommended
 
 ## Release Checklist
 
-1. Update pinned versions in `Containerfile` (the README does not pin versions).
+1. Update pinned versions in `Containerfile` (the README does not pin versions). Renovate proposes eligible updates automatically — review the PR rather than bumping by hand, and check the Dependency Dashboard issue if a pin looks stale.
 2. Run `./pi --help` to verify the image builds and Pi launches.
 3. Verify Git identity is correctly forwarded: `./pi` then inside the container run `git config --list`.
 4. Verify `gh` works: `./pi` then inside run `gh auth status`.

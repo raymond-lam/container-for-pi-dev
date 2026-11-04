@@ -1,0 +1,81 @@
+name: CI
+
+# Every push to main and every pull request — including Renovate's — must build
+# the image and prove the result still runs. The image is rebuilt on every
+# `./pi` invocation, so a broken base image or stale apt pin reaches users
+# immediately; this workflow is the gate that stops that.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint wrapper script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Syntax check
+        run: |
+          for script in pi entrypoint; do
+            bash -n "$script"
+          done
+      - name: ShellCheck
+        run: shellcheck --version && shellcheck pi entrypoint
+
+  build:
+    name: Build and smoke test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # ARM coverage is a native Linux image build, not an ARM macOS host.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Hosted Intel macOS has no Docker daemon. v1.1.0 also installs and
+      # links the buildx CLI plugin; no separate buildx setup is needed.
+      - name: Set up Docker on macOS (Colima)
+        if: runner.os == 'macOS'
+        uses: douglascamata/setup-docker-macos-action@d5ccc6aae0ce23e7700154f5e63cc53e6433ac48 # v1.1.0
+
+      - name: Verify Docker and buildx
+        run: |
+          docker version
+          docker buildx version
+
+      # The wrapper's default build, i.e. APP_UID/APP_GID = 1000. Also the
+      # check that the pinned apt, gh and pi versions are still resolvable.
+      - name: Build
+        run: docker build -f Containerfile -t pi-sandbox:ci .
+
+      - name: Smoke test
+        run: |
+          set -eux
+          docker run --rm pi-sandbox:ci pi --version
+          docker run --rm pi-sandbox:ci gh --version
+          docker run --rm pi-sandbox:ci bash -c \
+            'git --version && rg --version && socat -V && tini --version && pre-commit --version'
+
+          # Unprivileged user matching the build args, and a locked-down ~/.ssh.
+          test "$(docker run --rm pi-sandbox:ci id -u)" = "1000"
+          test "$(docker run --rm pi-sandbox:ci id -g)" = "1000"
+          test "$(docker run --rm pi-sandbox:ci stat -c %a /home/pi/.ssh)" = "700"
+
+          # Without proxy variables the entrypoint must pass through untouched.
+          test "$(docker run --rm pi-sandbox:ci sh -c 'echo passthrough')" = "passthrough"
