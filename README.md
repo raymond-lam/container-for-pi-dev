@@ -1,10 +1,46 @@
 # Pi Coding Agent — Docker Sandbox
 
-A thin Docker wrapper for the [Pi Coding Agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) that keeps your host machine clean while preserving a seamless development experience.
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg)](#prerequisites)
+[![Base image](https://img.shields.io/badge/base-node%3A24--bookworm--slim-2496ED.svg)](Containerfile)
 
-The companion `pi` script builds the image, injects your API key, and forwards just enough host state (project files, Git identity, GitHub CLI auth) so that the agent behaves as if it were running natively — without requiring Node.js, npm, or Pi itself on your host.
+<!-- TODO: record a 10-15s demo (asciinema/QuickTime): pi -> image build -> working session,
+     save as docs/demo.gif and uncomment: -->
+<!-- ![Demo: launching Pi inside the Docker sandbox](docs/demo.gif) -->
 
-The same wrapper is bridge-aware and can also be used with the [Pi Coding Agent VS Code extension](https://marketplace.visualstudio.com/items?itemName=pi0.pi-vscode) (`pi0.pi-vscode`).
+**Run the [Pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) in a disposable Docker container — an isolated, resource-capped AI coding agent on your machine, without Node.js, npm, or Pi installed on your host.**
+
+- 🧱 **No host install** — Pi, Node.js and npm live only in the image. Your host stays clean.
+- 🔑 **Credentials injected, never baked in** — API keys arrive as env vars at runtime; `~/.ssh` and `~/.gitconfig` are never mounted verbatim.
+- ✍️ **Commits still sign, `gh` still works** — a dedicated SSH signing agent and `GH_TOKEN` are forwarded, so `git commit -S` and `gh pr create` behave normally.
+- 🧩 **Bridge-aware for VS Code** — full support for the [`pi0.pi-vscode`](https://marketplace.visualstudio.com/items?itemName=pi0.pi-vscode) extension, including same-path mounts and clean RPC stdio.
+
+> New to Pi? It's a terminal AI coding agent (in the Claude Code / Cursor-CLI family). This repo only changes *where* it runs.
+
+The companion `pi` script builds the image, injects your API key, and forwards just enough host state (project files, Git identity, GitHub CLI auth) so that the agent behaves as if it were running natively.
+
+---
+
+## Quick start
+
+```bash
+git clone https://github.com/raymond-lam/container-for-pi-dev.git ~/src/pi-sandbox
+mkdir -p ~/bin && ln -s ~/src/pi-sandbox/pi ~/bin/pi   # ~/bin must be on your PATH
+
+export OPENROUTER_API_KEY=...   # or store in macOS Keychain — see API key setup below
+cd ~/my-project && pi           # first run builds the image; later runs are instant
+```
+
+You should land at a normal Pi prompt inside the container. `docker ps` shows a
+`pi-sandbox-*` container while it runs; it's removed on exit.
+
+<details><summary>Not on macOS? / Keychain setup</summary>
+
+On macOS you can store keys in Keychain instead of exporting them: service `openrouter.ai`,
+account `api-key` (and optionally `management-key` for the `pi-openrouter` extension). See
+[API key setup](#api-key-setup).
+
+</details>
 
 ---
 
@@ -21,23 +57,22 @@ The same wrapper is bridge-aware and can also be used with the [Pi Coding Agent 
 
 ---
 
-## Quick start
+## Why run Pi in a container?
 
-1. Clone this repository.
-2. Provide an OpenRouter API key: either `export OPENROUTER_API_KEY=...`, or on macOS store it in Keychain with service `openrouter.ai` and account `api-key`. Optionally provide a management key the same way (environment variable `OPENROUTER_MANAGEMENT_KEY`, or Keychain account `management-key`) — used by the `pi-openrouter` extension for usage/analytics, model sync, and API key management. See [API key setup](#api-key-setup).
-3. Symlink the wrapper into a directory on your `PATH` (e.g. `~/bin`) so you can invoke it from anywhere:
+| | Pi on the host | This sandbox |
+|---|---|---|
+| Host Node.js / npm / Pi install | required | none |
+| Agent can write outside your project | yes (your whole home dir) | no (project + `~/.pi` only) |
+| Resource limits (CPU / RAM / PIDs) | no | capped, and tunable |
+| SSH keys reachable by the agent | your whole agent | one dedicated signing key, signatures only |
+| `gh` auth | your keychain | token env var only; `hosts.yml` never mounted |
+| Reproducible toolkit (ripgrep, `gh`, pre-commit, git) | depends on your machine | pinned in `Containerfile` |
+| Cost | none | one container per session |
 
-   ```bash
-   ln -s "$(realpath /path/to/cloned-repo/pi)" ~/bin/pi
-   ```
-
-   Then run the agent from any project directory:
-
-   ```bash
-   pi
-   ```
-
-The first invocation builds the image; subsequent runs are instant thanks to Docker's layer cache.
+**When not to use it:** single-user local development only. `~/.pi` is mounted read-write
+(credentials and extensions are visible to container processes), an OpenRouter key is
+required, and the signing proxy is an unauthenticated, loopback-bound signature oracle.
+Windows is unsupported outside WSL2.
 
 ---
 
@@ -163,6 +198,61 @@ export OPENROUTER_MANAGEMENT_KEY=...
 | `.dockerignore` | Excludes `.git`, env files, common credential files, and editor debris from the build context |
 | `LICENSE` | Apache 2.0 license |
 | `NOTICE` | Attribution notice (see License) |
+
+---
+
+## FAQ
+
+<details><summary>Does it work on Linux without the macOS Keychain?</summary>
+
+Yes — export `OPENROUTER_API_KEY` (and optionally `OPENROUTER_MANAGEMENT_KEY`). The Keychain
+path only activates when the `security` CLI exists.
+
+</details>
+
+<details><summary>Podman? WSL2? Windows?</summary>
+
+Podman may need `host.docker.internal` / `host-gateway` configured for the VS Code bridge and
+SSH signing; the wrapper does not use host networking. Windows is unsupported outside WSL2.
+
+</details>
+
+<details><summary>Why is <code>~/.pi</code> mounted read-write?</summary>
+
+Pi state (auth credentials, settings, extensions, sessions) must be readable and writable for
+the agent to behave natively, and extensions persist sibling files alongside <code>agent</code>.
+The trade-off and mitigations are described in <a href="#security-notes">Security notes</a>.
+
+</details>
+
+<details><summary>Why does the SSH signing proxy have no authentication?</summary>
+
+It is an intentional trade-off: the proxy is bound to loopback (macOS) or the Docker bridge
+gateway (Linux) only, and forwards a single ephemeral agent that holds only your git signing
+key. See <a href="#security-notes">Security notes</a> for the full rationale.
+
+</details>
+
+<details><summary>Can I use a provider other than OpenRouter?</summary>
+
+The wrapper currently requires <code>OPENROUTER_API_KEY</code>. Other providers need a change to
+the key-forwarding section of <code>pi</code>.
+
+</details>
+
+<details><summary>Why don't my pre-commit hooks run?</summary>
+
+The image ships <code>pre-commit</code>, but repositories configure hooks per-clone. Re-run
+<code>pre-commit install</code> inside the container.
+
+</details>
+
+<details><summary>How do I upgrade Pi?</summary>
+
+Bump the pinned version in <code>Containerfile</code> and rerun. The VS Code extension's
+"Upgrade Pi and Packages" command upgrades the host install, not this image.
+
+</details>
 
 ---
 
