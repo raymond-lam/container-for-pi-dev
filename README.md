@@ -145,7 +145,7 @@ The wrapper uses `OPENROUTER_API_KEY` when it is set, and otherwise reads it fro
 export OPENROUTER_API_KEY=...
 ```
 
-An OpenRouter **management key** is optional. The `pi-openrouter` extension prefers it for usage/analytics, model sync, and API key management, but works without one. It is resolved the same way: `OPENROUTER_MANAGEMENT_KEY` from the environment first, otherwise the macOS Keychain (service `openrouter.ai`, account `management-key`). When neither is set, the key is simply not forwarded to the container:
+An OpenRouter **management key** is optional. The `pi-openrouter` extension prefers it for usage/analytics, model sync, and API key management, but works without one. It is resolved the same way: `OPENROUTER_MANAGEMENT_KEY` from the environment first, otherwise the macOS Keychain (service `openrouter.ai management`, account `management-key`; the alternate service `openrouter management` and legacy service `openrouter.ai` are also checked). When neither is set, the key is simply not forwarded to the container:
 
 ```bash
 export OPENROUTER_MANAGEMENT_KEY=...
