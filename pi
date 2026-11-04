@@ -92,7 +92,7 @@ export OPENROUTER_API_KEY
 # The management key is optional: missing it is not an error, so there is no
 # guard on this optional read.
 if [[ -z "${OPENROUTER_MANAGEMENT_KEY:-}" ]] && command -v security >/dev/null 2>&1; then
-  OPENROUTER_MANAGEMENT_KEY="$(security find-generic-password -s openrouter.ai -a management-key -w 2>/dev/null || true)"
+  OPENROUTER_MANAGEMENT_KEY="$(security find-generic-password -s "openrouter.ai management" -a management-key -w 2>/dev/null || security find-generic-password -s "openrouter management" -a management-key -w 2>/dev/null || security find-generic-password -s openrouter.ai -a management-key -w 2>/dev/null || true)"
 fi
 if [[ -n "${OPENROUTER_MANAGEMENT_KEY:-}" ]]; then
   export OPENROUTER_MANAGEMENT_KEY
