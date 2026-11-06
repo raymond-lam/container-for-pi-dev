@@ -1,0 +1,42 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard"
+  ],
+  "minimumReleaseAge": "3 days",
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Base image and Debian package pins are coupled: the suite determines which package versions exist, so they move together.",
+      "matchManagers": ["dockerfile"],
+      "matchDatasources": ["docker", "deb"],
+      "groupName": "base image and Debian pins"
+    },
+    {
+      "description": "gh and the pi coding agent are independent of the OS layer; keep them in one small PR of their own.",
+      "matchManagers": ["custom.regex"],
+      "groupName": "tool pins (gh, pi)",
+      "separateMultipleMajor": true
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "GitHub CLI version pinned in the apt-get install line",
+      "managerFilePatterns": ["/(^|/)[Cc]ontainerfile$/"],
+      "matchStrings": ["gh=(?<currentValue>[0-9]+(?:\\.[0-9]+)*)"],
+      "depNameTemplate": "cli/cli",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "pi coding agent version pinned in the global npm install",
+      "managerFilePatterns": ["/(^|/)[Cc]ontainerfile$/"],
+      "matchStrings": [
+        "npm install -g --ignore-scripts (?<depName>@[^\\s@]+/[^\\s@]+)@(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "npm"
+    }
+  ]
+}
