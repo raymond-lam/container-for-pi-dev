@@ -22,7 +22,7 @@
 # to find in PATH (bash, git, ripgrep) plus the GitHub CLI (`gh`) so that
 # authenticated `gh` operations work inside the container.
 
-FROM node:24-bookworm-slim
+FROM node:26-bookworm-slim
 
 # Install core tools.
 #   • bash        – required by some pi internals
