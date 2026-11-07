@@ -196,7 +196,7 @@ export OPENROUTER_MANAGEMENT_KEY=...
 | `Containerfile` | OCI image definition based on Node.js 24; installs bash, ca-certificates, curl, git, gnupg, openssh-client, pre-commit (with Python), ripgrep, socat, tini, `gh`, and Pi. Package versions are pinned here |
 | `entrypoint` | Container entrypoint; optionally bridges the host SSH agent proxy |
 | `.github/workflows/ci.yml` | Builds and smoke-tests the image on Linux x64, native Linux ARM64, and Intel macOS (Colima) |
-| `.github/renovate.json` | Renovate config that keeps the base image, Debian package pins, `gh`, and Pi versions current |
+| `.github/renovate.json` | Renovate config for the base image, Debian package pins, `gh`, and Pi |
 | `.dockerignore` | Excludes `.git`, env files, common credential files, and editor debris from the build context |
 | `LICENSE` | Apache 2.0 license |
 | `NOTICE` | Attribution notice (see License) |
@@ -210,6 +210,15 @@ On every pull request and push to `main`, CI builds and smoke-tests the image on
 (using Colima, not Docker Desktop). Each host tests the default image, installed
 tools, unprivileged user, SSH directory permissions, and entrypoint passthrough.
 These checks do not exercise the host wrapper or make provider API calls.
+
+Renovate looks up Debian pins in the Bookworm repositories for amd64; CI checks
+whether proposed pins also build on ARM64. Renovate's `deb` datasource currently
+[does not support](https://github.com/renovatebot/renovate/issues/44330) the
+`.xz`-only Bookworm updates and security indexes. Until it does, security-only
+updates may need to be applied manually before they reach the main Bookworm
+index. The three-day minimum release age does not apply to Debian packages,
+because the datasource does not provide release timestamps. Update the suites
+in `.github/renovate.json` when changing the base image suite.
 
 Native Linux ARM64 image coverage is not macOS ARM Docker coverage. Apple
 Silicon macOS hosts, including M3 hardware, and Docker Desktop integration
