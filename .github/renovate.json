@@ -14,6 +14,26 @@
       "groupName": "base image and Debian pins"
     },
     {
+      "description": "Look up Bookworm packages (including updates and security when Renovate supports their xz indexes). Debian releases have no timestamps, so disable the release-age check.",
+      "matchManagers": ["dockerfile"],
+      "matchFileNames": ["Containerfile"],
+      "matchDatasources": ["deb"],
+      "minimumReleaseAge": null,
+      "prBodyNotes": ["Debian packages do not provide release timestamps to Renovate, so the minimum release age is not enforced."],
+      "registryUrls": [
+        "https://deb.debian.org/debian?suite=bookworm&components=main&binaryArch=amd64",
+        "https://deb.debian.org/debian?suite=bookworm-updates&components=main&binaryArch=amd64",
+        "https://deb.debian.org/debian-security?suite=bookworm-security&components=main&binaryArch=amd64"
+      ]
+    },
+    {
+      "description": "Track gh from GitHub releases instead of the Debian package index.",
+      "matchManagers": ["dockerfile"],
+      "matchDatasources": ["deb"],
+      "matchPackageNames": ["gh"],
+      "enabled": false
+    },
+    {
       "description": "gh and the pi coding agent are independent of the OS layer; keep them in one small PR of their own.",
       "matchManagers": ["custom.regex"],
       "groupName": "tool pins (gh, pi)",
