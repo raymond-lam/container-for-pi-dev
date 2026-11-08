@@ -62,7 +62,7 @@ account `api-key` (and optionally `management-key` for the `pi-openrouter` exten
 | | Pi on the host | This sandbox |
 |---|---|---|
 | Host Node.js / npm / Pi install | required | none |
-| Agent can write outside your project | yes (your whole home dir) | no (project + `~/.pi` only) |
+| Agent can write outside your project | yes (your whole home dir) | container filesystem: project + `~/.pi` only; [VS Code bridge is an exception](#vs-code-bridge-permissions) |
 | Resource limits (CPU / RAM / PIDs) | no | capped, and tunable |
 | SSH keys reachable by the agent | your whole agent | one dedicated signing key, signatures only |
 | `gh` auth | your keychain | token env var only; `hosts.yml` never mounted |
@@ -90,6 +90,7 @@ Windows is unsupported outside WSL2.
 | Git `allowed_signers` | `/home/pi/.config/git/allowed_signers` | For SSH signature verification |
 | `gh` config (`~/.config/gh/config.yml`) | `/home/pi/.config/gh/config.yml` | Read-only settings and aliases. `hosts.yml` is deliberately not mounted because it can contain plaintext OAuth tokens |
 | `gh` OAuth token | `GH_TOKEN` env var | Retrieved via `gh auth token` and injected so `gh` works without a container login; git uses it for GitHub HTTPS auth via the `gh` credential helper |
+| VS Code bridge (when enabled) | `PI_VSCODE_BRIDGE_URL`, `PI_VSCODE_BRIDGE_TOKEN`, `PI_VSCODE_TERMINAL_ID` env vars | URL rewritten for container reachability. Grants host-side editor capabilities beyond the bind mounts — see [bridge permissions](#vs-code-bridge-permissions) |
 
 The wrapper does not mount `~/.ssh` or `~/.gitconfig` verbatim, but it does mount all of `~/.pi` read-write. Container processes can read and modify Pi's credentials and state there; only use this sandbox with trusted code and extensions.
 
@@ -169,6 +170,32 @@ When launched by the extension, the wrapper additionally handles the bridge and 
 > - The wrapper uses one host address for both the bridge and SSH agent: `host.docker.internal`. On Linux it is mapped to the Docker bridge gateway via `--add-host=host.docker.internal:host-gateway`; Docker Desktop provides it natively, while Podman may need equivalent configuration. Host networking is not used.
 > - Extension bridge tools see the same file paths as the host, which is why the project is mounted at its host path.
 > - The extension's **Upgrade Pi and Packages** command upgrades the host Pi, not the Pi installed in the container image. Bump the version in `Containerfile` and rebuild instead.
+
+### VS Code bridge permissions
+
+**The VS Code bridge is a host-capability channel, not part of Docker's filesystem sandbox.** The wrapper forwards its URL and authentication token into the container; bridge requests execute in the host-side VS Code extension, with VS Code's access to host files. Docker's bind-mount restrictions do not constrain those operations, including paths outside the mounted project.
+
+In the current upstream implementation, two tools deserve explicit approval:
+
+- `vscode_apply_workspace_edit` applies text replacements through VS Code's `workspace.applyEdit`, changing editor buffers on the host. Auto Save can persist those changes without a separate save-tool call.
+- `vscode_save_document` calls VS Code's `document.save()`, writing the host-side buffer to disk, including any existing unsaved changes.
+
+See the upstream [bridge tool documentation](https://github.com/pithings/pi-vscode#bridge-tools-exposed-to-pi) and [handlers](https://github.com/pithings/pi-vscode/blob/main/src/bridge/handlers.ts).
+
+**Recommendation:** install the optional [`@gotgenes/pi-permission-system`](https://www.npmjs.com/package/@gotgenes/pi-permission-system) extension and set both tools to `ask` rather than blanket-allowing them. Merge these entries into the `permission` object in `~/.pi/agent/extensions/pi-permission-system/config.json` (do not replace your other rules):
+
+```json
+{
+  "permission": {
+    "vscode_apply_workspace_edit": "ask",
+    "vscode_save_document": "ask"
+  }
+}
+```
+
+Review the target paths and requested changes before approving; inspect dirty buffers before allowing a save. These two rules are not exhaustive: `vscode_format_document`, `vscode_format_range`, and `vscode_execute_code_action` can also mutate host-side documents and should be reviewed for `ask` or `deny` policies. Auto Save is outside the tool-call gate.
+
+Permission prompts are an agent-tool guardrail, **not a hard security boundary**: container processes holding the forwarded bridge token can call the bridge directly, bypassing tool-name permission checks. To avoid granting these host capabilities, use the wrapper from a standalone terminal with `PI_VSCODE_BRIDGE_URL` unset.
 
 ---
 
@@ -288,6 +315,7 @@ Bump the pinned version in <code>Containerfile</code> and rerun. The VS Code ext
 - The entire `~/.pi` directory is mounted read-write, including `agent/auth.json` provider credentials, settings, and installed extensions. Processes in the container can read or modify this state, and changes persist on the host. Do not run untrusted code or extensions with this mount.
 - For SSH commit signing, the wrapper starts a **fresh, isolated `ssh-agent` on the host** and loads only your git signing key into it — never your personal agent or other identities. It locates the private key as the sibling of the `.pub` file, then verifies the key pair by fingerprint, before showing the container a signature oracle via a short-lived `socat` TCP proxy. The private key itself is never mounted into the container, so a compromised agent can only request signatures with that one key. Independently, the configured `user.signingkey` *path* is the file that gets mounted; if it points at a private key, signing is refused rather than that file being mounted into the sandbox. Unix sockets cannot cross the Docker Desktop/Podman VM boundary, which is why the wrapper proxies the ephemeral agent socket. On Linux the container uses the default Docker network plus `host.docker.internal` (via `host-gateway`) rather than host networking, and the proxy binds to the Docker bridge gateway. On macOS it binds to host loopback, which Docker Desktop forwards via `host.docker.internal`; it is never bound to every interface. If the Docker bridge gateway cannot be determined on Linux, signing is disabled rather than exposing the proxy broadly. If the key pair cannot be confirmed or the agent cannot be started, signing is disabled with a warning rather than failing at commit time.
 - The SSH-agent signing proxy is an unauthenticated signature oracle bound to host loopback (macOS) or the Docker bridge gateway (Linux): anything that can reach that address can request signatures with the one loaded signing key. This is a deliberate trade-off — the blast radius is limited to a single, dedicated key — but it is why the proxy is never bound to all interfaces.
+- When enabled, the [VS Code bridge](#vs-code-bridge-permissions) lets container processes request host-side editor operations beyond the bind mounts. Require approval for mutating bridge tools; disable the bridge if you need its host capabilities excluded.
 - The `.dockerignore` keeps `.git`, `.env` files, common credential files, and editor debris out of the Docker build context. This reduces accidental disclosure to the Docker daemon/builder; it is not a substitute for keeping secrets outside the repository.
 
 ---
